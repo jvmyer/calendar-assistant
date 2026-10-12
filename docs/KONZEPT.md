@@ -1,0 +1,168 @@
+# Konzept – Persönlicher Planungsassistent (Name TBD)
+
+Stand: 2026-10-12 · Status: Entwurf
+
+## 1. Ziel
+
+Ein Hintergrunddienst, der alle relevanten Informationsquellen (Mails, ILIAS, Telegram) auswertet, daraus Aufgaben ableitet und diese automatisch als Blocker in Google Kalender einplant. Ändert sich etwas (Meeting fällt aus, neue Deadline), wird neu geplant. **Google Kalender ist die einzige Oberfläche**, der Telegram-Bot ist die Steuerzentrale.
+
+Nutzung: nur für mich selbst (Single-User). Kein öffentliches Login-System, keine Google-App-Verifizierung nötig.
+
+## 2. Grundprinzipien
+
+1. **Der Mensch gewinnt immer.** Was ich in Google Kalender/Tasks oder per Bot ändere, hat die höchste Berechtigungsstufe. Manuell verschobene Blocker werden „gepinnt“ und vom Algorithmus nicht mehr angefasst.
+2. **Alles nachvollziehbar.** Jede automatische Aktion landet im Change-Log mit Quelle und Begründung und ist rückgängig machbar.
+3. **Stabilität vor Optimalität.** Heute und morgen bleiben stabil; nur Dringendes darf dort eingreifen. Ab übermorgen wird frei optimiert.
+4. **Lokal zuerst.** Mailinhalte und Sprachnachrichten werden auf eigener Hardware verarbeitet, nicht über externe KI-Dienste.
+
+## 3. Architektur
+
+```
+ Quellen                     Kern (Laptop-Server, 16 GB, Docker)                  Ausgabe
+┌──────────────┐   ┌───────────────────────────────────────────────┐   ┌─────────────────┐
+│ Gmail (IMAP) │──▶│ Connectors ──▶ Extraktion (lokales LLM)       │   │ Google Calendar │
+│ HKA-Mail     │──▶│                     │                         │──▶│  (Blocker)      │
+│ ILIAS (iCal) │──▶│                     ▼                         │   │ Google Tasks    │
+│ Telegram     │──▶│ Task-Store (SQLite) ◀──▶ Planer (Scheduler)    │◀──│  (Erledigt ✓)   │
+│  Text/Voice  │   │        │                     │                │   └─────────────────┘
+└──────────────┘   │        ▼                     ▼                │   ┌─────────────────┐
+                   │   Change-Log           Lern-Modul (Aufwand)   │──▶│ Telegram-Bot    │
+                   └───────────────────────────────────────────────┘   │ (Infos, /undo)  │
+                                                                       └─────────────────┘
+```
+
+### Module
+
+| Modul | Aufgabe |
+|---|---|
+| **Connectors** | Holen periodisch neue Daten (Mails, ILIAS-Termine, Kalenderänderungen). Jede Quelle ist ein Plugin mit gleicher Schnittstelle → spätere Quellen (Arbeitskalender, WhatsApp …) einfach ergänzbar. |
+| **Extraktion** | Lokales LLM entscheidet: Enthält diese Mail eine Aufgabe? Wenn ja: Titel, Deadline, Bereich, geschätzter Aufwand. Strukturierte JSON-Ausgabe. |
+| **Task-Store** | SQLite. Aufgaben, Bereiche, Regeln, Verknüpfungen zu Kalender-Event- und Task-IDs. |
+| **Planer** | Verteilt offene Aufgaben auf freie Zeitfenster gemäß Prioritäten und Regeln. Wird bei jeder relevanten Änderung getriggert. |
+| **Lern-Modul** | Vergleicht geschätzten mit tatsächlichem Aufwand und korrigiert künftige Schätzungen. |
+| **Change-Log** | Append-only Ereignisprotokoll, Basis für Bot-Meldungen und Undo. |
+| **Telegram-Bot** | Eingabe (Text + Sprache via Whisper), kurze Änderungsmeldungen, Morgenübersicht, Feedback, Korrekturen. |
+
+## 4. Datenquellen
+
+| Quelle | Zugang | Bemerkung |
+|---|---|---|
+| Gmail | IMAP + App-Passwort | Vermeidet Gmail-API (restricted scope, Verifizierung). Erfordert 2FA im Google-Konto. |
+| HKA-Mail | Exchange (OWA unter owa.h-ka.de) | **Zu klären:** IMAP freigeschaltet? Sonst EWS (z. B. `exchangelib`) mit Uni-Login. |
+| ILIAS HKA | iCal-Abo aus dem ILIAS-Kalender | Abgabefristen, Termine, Kurs-Events. Scraping nur falls nötig. |
+| Telegram | Bot-API (Long Polling) | Kein öffentlicher Port nötig, läuft hinter Heim-Router. |
+| Google Calendar / Tasks | Google API, OAuth (eigenes Cloud-Projekt) | App in „Production“ stellen (unverifiziert, Warnhinweis akzeptieren), sonst laufen Refresh-Tokens im Testmodus nach 7 Tagen ab. |
+| Arbeitskalender | – | Später. |
+
+## 5. Darstellung im Kalender
+
+- Jede eingeplante Aufgabe = **Blocker-Event** im Kalender + **verknüpfter Google Task** (für „Erledigt“).
+- Einschränkung: Google Tasks speichert über die API nur das Fälligkeits*datum*, keine Uhrzeit. Die Uhrzeit trägt das Event; der Task dient als Checkbox.
+- Erkennung von Blockern über Metadaten (`extendedProperties` am Event), damit das Tool nur eigene Events verändert.
+- Blocker landen in einem **eigenen Nebenkalender „Planer“** im selben Google-Konto (gleiche Ansicht, eigene Farbe, ein-/ausblendbar). Der Hauptkalender wird nur gelesen.
+
+## 6. Priorisierung
+
+### Bereiche in beliebiger Tiefe
+
+Bereiche sind ein Baum mit Gewichten, die sich nach unten vererben und überschrieben werden können:
+
+```
+Arbeit (1.0)
+├── Projekt A (1.2)
+└── Admin (0.6)
+Uni (0.8)
+├── Modul X (1.0)
+│   └── Abgabe 3 (1.5)
+└── Modul Y (0.7)
+Privat (0.5)
+```
+
+Alles zur Laufzeit änderbar (per Bot oder Config-Datei).
+
+### Score einer Aufgabe
+
+```
+score = Bereichsgewicht × Dringlichkeit(Deadline, Restaufwand) × manueller Faktor
+```
+
+- **Dringlichkeit** steigt, je weniger freie Zeit bis zur Deadline relativ zum Restaufwand bleibt (Slack-basiert, nicht nur Kalendertage).
+- **Manueller Faktor**: z. B. „heute noch“ per Telegram → hart auf heute.
+
+### Regeln (Constraints)
+
+Konfigurierbar, z. B.: Arbeitszeitfenster, Ruhezeiten, max. Stunden pro Bereich und Tag, Puffer zwischen Terminen, minimale/maximale Blockgröße, Bereiche nur an bestimmten Tagen.
+
+### Algorithmus (stufenweise)
+
+1. **MVP:** Greedy – Aufgaben nach Score sortieren, in frühestes passendes Zeitfenster legen, große Aufgaben in Blöcke splitten.
+2. **Später:** Constraint-Solver (Google OR-Tools CP-SAT) für globale Optimierung mit Stabilitäts-Strafterm (Umplanen kostet Punkte).
+
+## 7. Lernende Aufwandsschätzung
+
+1. LLM schätzt den Aufwand beim Anlegen der Aufgabe.
+2. Nach Erledigung fragt der Bot kurz: *„‚Bericht X‘: geschätzt 2 h – passt? [👍] [mehr] [weniger] [Zeit eingeben]“*
+3. Pro Bereich/Aufgabentyp wird ein Korrekturfaktor gelernt (gleitender Mittelwert von tatsächlich/geschätzt).
+4. Später: Regressionsmodell auf Merkmalen (Bereich, Quelle, Textlänge, Schlüsselwörter) und/oder ähnliche vergangene Aufgaben als Beispiele in den LLM-Prompt (Few-Shot).
+
+## 8. Telegram-Bot
+
+- **Eingabe:** „Morgen Bericht schreiben, ca. 2 h, Uni“ oder Sprachnachricht → Whisper → Extraktion.
+- **Meldungen (kurz):** „➕ 2 neue Aufgaben aus Mail · 🔁 ‚Lernen Mathe‘ auf 14:00 vorgezogen (Meeting entfallen)“
+- **Morgenübersicht:** Tagesplan in wenigen Zeilen.
+- **Befehle (Entwurf):** `/heute`, `/log`, `/undo <id>`, `/falsch <id>` (Fehlerkennung → Lernsignal), `/prio`, `/pause`.
+
+## 9. Hardware & Deployment
+
+| Gerät | RAM | Rolle |
+|---|---|---|
+| Laptop (freies Gerät, Linux) | 16 GB | **Hauptsystem**, läuft 24/7 zu Hause: Connectors, Planer, Bot, Whisper (small/medium), lokales LLM (7–8B, 4-Bit-quantisiert, ca. 5–6 GB RAM). |
+| Raspberry Pi 5 | 4 GB | Nicht im Kern. Optional: Backup-Ziel oder Monitoring. |
+| Gemieteter Server | ~3 GB | Nicht im Kern. Optional: verschlüsselte Offsite-Backups. |
+
+### Laptop als Server einrichten
+
+- Linux ohne Desktop (Debian 12 oder Ubuntu Server LTS), Zugriff per SSH.
+- Weiterlaufen bei geschlossenem Deckel (`HandleLidSwitch=ignore` in `logind.conf`), Suspend/Hibernate deaktivieren.
+- Nach Stromausfall automatisch starten (BIOS: „Power on AC“, falls vorhanden; sonst überbrückt der Akku).
+- Akku schonen: Ladegrenze 60–80 %, falls Hardware/BIOS das unterstützt.
+- Automatische Sicherheitsupdates (`unattended-upgrades`), Firewall (`ufw`, nur SSH im LAN).
+- Kein offener Port nach außen nötig (Telegram Long Polling, alle APIs ausgehend).
+
+- Deployment via Docker Compose (x86_64).
+- Lokales LLM via **Ollama** auf der CPU (bzw. GPU, falls vorhanden).
+- Secrets (Passwörter, Tokens) in `.env` bzw. verschlüsselt, nie im Repo.
+
+## 10. Tech-Stack (Vorschlag)
+
+- **Python 3.12** (beste Bibliotheken für alle Teile)
+- `google-api-python-client` (Calendar, Tasks), `imapclient` / `exchangelib`, `icalendar`
+- `python-telegram-bot`, `faster-whisper`
+- Ollama (z. B. Qwen 2.5 7B, Llama 3.1 8B, Mistral 7B – mit echten Mails vergleichen)
+- SQLite + SQLAlchemy, APScheduler für Polling-Jobs
+- später OR-Tools
+
+## 11. MVP-Reihenfolge
+
+1. **Grundgerüst:** Projektstruktur, Config, SQLite, Change-Log.
+2. **Google-Anbindung:** Kalender lesen, Blocker + Tasks schreiben, Erledigt-Status lesen.
+3. **Telegram-Bot (Text):** Aufgabe anlegen → Planer → Blocker im Kalender → Meldung.
+4. **Planer v1 (Greedy)** mit Bereichsbaum und Basisregeln; Umplanung bei Kalenderänderungen.
+5. **Sprache:** Whisper im Bot.
+6. **ILIAS-iCal.**
+7. **Mails + lokales LLM:** Gmail, dann HKA.
+8. **Lernende Aufwandsschätzung.**
+9. **Planer v2 (CP-SAT)**, weitere Quellen.
+
+Nach Schritt 4 ist das Tool bereits im Alltag nutzbar.
+
+## 12. Offene Punkte
+
+- [x] Blocker in eigenem Nebenkalender „Planer“
+- [ ] Lokales LLM: welches 7–8B-Modell extrahiert Aufgaben aus deutschen Mails am zuverlässigsten? → Test mit echten Mails
+- [ ] Laptop: Modell/CPU, GPU?, Ladegrenze möglich?
+- [ ] HKA-Mail: IMAP verfügbar oder EWS nötig?
+- [ ] ILIAS HKA: iCal-Export vorhanden und welche Inhalte enthält er?
+- [ ] Bereichsbaum und Regeln definieren
+- [ ] Name
+- [ ] Arbeitskalender (später)
