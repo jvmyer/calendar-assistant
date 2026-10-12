@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from . import changelog
 from .calendar_client import CalendarClient
 from .config import load_settings
-from .db import connect
+from .db import connect, set_meta
 from .google_auth import ReauthNeeded, get_credentials, login
 
 
@@ -17,6 +17,9 @@ def cmd_login(_args) -> int:
     settings = load_settings()
     conn = connect(settings.db_path)
     login(settings)
+    set_meta(conn, "google_login_at", changelog.now_iso())
+    set_meta(conn, "reauth_notified", "0")
+    set_meta(conn, "expiry_warned", "0")
     changelog.log(conn, actor="user", action="auth.login", entity="google")
     print("Login erfolgreich. Token gespeichert (gültig bis Re-Login in ~7 Tagen).")
     return 0
@@ -83,6 +86,22 @@ def cmd_mirror_raumzeit(_args) -> int:
     return 0
 
 
+def cmd_run(args) -> int:
+    from .service import LogNotifier, run_forever, sync_cycle
+
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    notifier = LogNotifier()
+    if args.once:
+        sync_cycle(conn, settings, notifier)
+        return 0
+    run_forever(conn, settings, notifier, interval_min=args.interval)
+    return 0
+
+
 def cmd_log(args) -> int:
     conn = connect(load_settings().db_path)
     for row in reversed(changelog.recent(conn, args.n)):
@@ -124,6 +143,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mirror-raumzeit", help="Stundenplan in Google-Kalender „Stundenplan“ spiegeln").set_defaults(
         fn=cmd_mirror_raumzeit
     )
+    p_run = sub.add_parser("run", help="Hintergrunddienst (Sync-Takt)")
+    p_run.add_argument("--once", action="store_true", help="Nur einen Durchlauf, dann beenden")
+    p_run.add_argument("--interval", type=int, default=30, help="Minuten zwischen Läufen (min. 30)")
+    p_run.set_defaults(fn=cmd_run)
     sub.add_parser("calendar-check", help="Kalender-Zugriff testen (nur lesend)").set_defaults(
         fn=cmd_calendar_check
     )

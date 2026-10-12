@@ -1,0 +1,23 @@
+# systemd-Unit für den Laptop-Server (Linux). Installation:
+#   sudo cp deploy/planner.service /etc/systemd/system/planner.service
+#   (Pfade/Benutzer anpassen) && sudo systemctl enable --now planner
+[Unit]
+Description=Calendar Assistant (Planer-Dienst)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=planner
+WorkingDirectory=/opt/calendar-assistant
+ExecStart=/opt/calendar-assistant/.venv/bin/planner run
+Restart=on-failure
+RestartSec=60
+# Härtung
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/calendar-assistant/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

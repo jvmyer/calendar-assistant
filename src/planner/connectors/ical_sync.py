@@ -216,13 +216,15 @@ def sync(
     return result
 
 
-def sync_url(conn: sqlite3.Connection, source: str, url: str, *, force: bool = False) -> SyncResult:
+def sync_url(
+    conn: sqlite3.Connection, source: str, url: str, *, force: bool = False, fetcher=None
+) -> SyncResult:
     last = get_meta(conn, f"last_fetch:{source}")
     if last and not force:
         age = (datetime.now(UTC) - datetime.fromisoformat(last)).total_seconds()
         if age < MIN_INTERVAL_S:
             return SyncResult(skipped=True)
-    result = sync(conn, source, parse_ics(fetch(url)))
+    result = sync(conn, source, parse_ics((fetcher or fetch)(url)))
     set_meta(conn, f"last_fetch:{source}", datetime.now(UTC).isoformat(timespec="seconds"))
     return result
 
