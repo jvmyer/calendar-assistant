@@ -47,11 +47,12 @@ Nutzung: nur für mich selbst (Single-User). Kein öffentliches Login-System, ke
 
 | Quelle | Zugang | Bemerkung |
 |---|---|---|
-| Gmail | IMAP + App-Passwort | Vermeidet Gmail-API (restricted scope, Verifizierung). Erfordert 2FA im Google-Konto. |
-| HKA-Mail | Exchange (OWA unter owa.h-ka.de) | **Zu klären:** IMAP freigeschaltet? Sonst EWS (z. B. `exchangelib`) mit Uni-Login. |
-| ILIAS HKA | iCal-Abo aus dem ILIAS-Kalender | Abgabefristen, Termine, Kurs-Events. Scraping nur falls nötig. |
+| Gmail | Gmail-API über dasselbe OAuth-Projekt wie Calendar (Fallback: IMAP + App-Passwort) | Für Eigennutzung keine Verifizierung nötig („unverified app“-Hinweis einmalig bestätigen). App-Passwörter gelten als Auslaufmodell. |
+| HKA-Mail | **OWA-Webzugang** `https://owa-cert.h-ka.de`: Formular-Login (`/owa/auth.owa`) mit **HARICA-Client-Zertifikat** + RZ-Kürzel/Passwort, danach OWA-JSON-Schnittstelle (`/owa/service.svc`, Browser-User-Agent, `X-OWA-CANARY`) nur **lesend** | Kein IMAP. EWS/NTLM (offiziell laut RZ-Handout) scheitert bei uns (401 / Verbindungsabbruch), Ursache unklar. OWA-Weg ist inoffiziell → kann bei OWA-Updates brechen. Sitzung wiederverwenden, nie automatisch bei Fehler neu einloggen (Fehlerzähler!). Login-Test am 2026-10-12 erfolgreich. |
+| ILIAS HKA | iCal-Abo aus dem ILIAS-Kalender (`ilias.h-ka.de/calendar.php?…token=…`) | Endpoint existiert (öffentlich erreichbar). Abo-URL muss nach Login im ILIAS-Kalender über „Abonnieren“ kopiert werden. Fallback: SOAP-Webservice (`/webservice/soap/server.php`, erreichbar) oder Scraping. |
+| Stundenplan (raumzeit.hka-iwi.de) | persönlicher iCal-Feed, direkt abgerufen (Mindestabstand 30 min), Änderungserkennung per UID | **Entscheidung:** Direkt statt über Google-Abo (dort stundenlange Verzögerung; Google-Kalender „Uni“ war veraltet). Verschoben/entfallen/neu → Change-Log → Planer + Bot. Umgesetzt: `connectors/ical_sync.py`. |
 | Telegram | Bot-API (Long Polling) | Kein öffentlicher Port nötig, läuft hinter Heim-Router. |
-| Google Calendar / Tasks | Google API, OAuth (eigenes Cloud-Projekt) | App in „Production“ stellen (unverifiziert, Warnhinweis akzeptieren), sonst laufen Refresh-Tokens im Testmodus nach 7 Tagen ab. |
+| Google Calendar / Tasks / Gmail | Google API, OAuth (eigenes Cloud-Projekt `calendar-assistant`, Desktop-Client) | **Entscheidung:** App bleibt privat im Teststatus (kein öffentliches Branding nötig). Folge: Refresh-Token läuft alle 7 Tage ab → Re-Login alle 7 Tage; der Bot meldet per Telegram „Bitte neu einloggen“ und der Login wird in einer Minute erledigt. Nutzer 88045436+jvmyer@users.noreply.github.com ist als Testnutzer eingetragen. |
 | Arbeitskalender | – | Später. |
 
 ## 5. Darstellung im Kalender
@@ -161,8 +162,11 @@ Nach Schritt 4 ist das Tool bereits im Alltag nutzbar.
 - [x] Blocker in eigenem Nebenkalender „Planer“
 - [ ] Lokales LLM: welches 7–8B-Modell extrahiert Aufgaben aus deutschen Mails am zuverlässigsten? → Test mit echten Mails
 - [ ] Laptop: Modell/CPU, GPU?, Ladegrenze möglich?
-- [ ] HKA-Mail: IMAP verfügbar oder EWS nötig?
-- [ ] ILIAS HKA: iCal-Export vorhanden und welche Inhalte enthält er?
+- [x] HKA-Mail: kein IMAP → EWS über owa-cert.h-ka.de mit HARICA-Zertifikat
+- [ ] HARICA-Nutzerzertifikat (Email-only reicht vermutlich) beantragen: cm.harica.gr → Academic Login
+- [ ] ILIAS: Abo-URL im Kalender kopieren und Inhalt prüfen
+- [x] Google-Cloud-Projekt angelegt (Calendar, Tasks, Gmail API aktiv, OAuth-Client in `.env`), bleibt im Teststatus (7-Tage-Login)
+- [ ] Bot-Funktion „Token abgelaufen → Re-Login“ einplanen (Phase 3)
 - [ ] Bereichsbaum und Regeln definieren
 - [ ] Name
 - [ ] Arbeitskalender (später)
