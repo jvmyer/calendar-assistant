@@ -26,6 +26,7 @@ source = { editable = "." }
 dependencies = [
     { name = "google-api-python-client" },
     { name = "google-auth-oauthlib" },
+    { name = "httpx" },
     { name = "icalendar" },
     { name = "python-dotenv" },
     { name = "python-telegram-bot" },
@@ -41,6 +42,7 @@ dev = [
 requires-dist = [
     { name = "google-api-python-client", specifier = ">=2.140" },
     { name = "google-auth-oauthlib", specifier = ">=1.2" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "icalendar", specifier = ">=7.3.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "python-telegram-bot", specifier = ">=22.8" },

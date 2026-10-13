@@ -28,6 +28,7 @@ COMMANDS = [
     ("heute", "Termine, Blocker und Fälliges von heute"),
     ("aufgaben", "Offene Aufgaben"),
     ("vorschlaege", "Offene Vorschläge"),
+    ("ilias", "Neueste ILIAS-Neuigkeiten"),
     ("log", "Letzte Änderungen"),
     ("hilfe", "Hilfe"),
 ]

@@ -19,6 +19,7 @@ from . import changelog, gtasks, proposals
 from .calendar_client import CalendarClient
 from .config import Settings
 from .connectors.ical_sync import Event, SyncResult, sync_url
+from .connectors.ilias import IliasAuthError, IliasClient, NewsSyncResult, sync_news
 from .db import get_meta, set_meta
 from .google_auth import ReauthNeeded, get_credentials
 from .gtasks import TasksClient
@@ -128,6 +129,49 @@ def _notify_proposals(conn: sqlite3.Connection, notifier: Notifier) -> None:
     proposals.mark_notified(conn, sent)
 
 
+ILIAS_MIN_INTERVAL = timedelta(minutes=30)
+
+
+def ilias_step(
+    conn: sqlite3.Connection, settings: Settings, notifier: Notifier, now: datetime, *, ilias_factory=None,
+    force: bool = False,
+) -> NewsSyncResult | None:
+    """ILIAS-Neuigkeiten abrufen. Aufgaben-artige neue Einträge werden **Vorschläge** (nie direkt Aufgaben).
+
+    Höchstens ein Login-Versuch pro Lauf; nach einem Fehlschlag kein automatischer Retry
+    (Kontosperre!), bis der Nutzer `planner ilias-login` ausführt.
+    """
+    if ilias_factory is None and not (settings.hka_user and settings.hka_password):
+        return None
+    if get_meta(conn, "ilias_blocked") == "1":
+        return None
+    last = get_meta(conn, "ilias_last_sync")
+    if not force and last and now - datetime.fromisoformat(last) < ILIAS_MIN_INTERVAL:
+        return None
+    client = ilias_factory() if ilias_factory else IliasClient(
+        settings.hka_user, settings.hka_password, settings.ilias_session_path)
+    try:
+        result = sync_news(conn, client.fetch_news_html(), now=now)
+        set_meta(conn, "ilias_last_sync", now.isoformat())
+        for item in result.task_like:
+            proposals.add_proposal(
+                conn, title=f"ILIAS: {item.title}"[:200], kind="task", source="ilias", actor="ilias",
+                source_ref=item.news_id, note=f"{item.author} · {item.ts:%d.%m. %H:%M}\n{item.url}")
+        return result
+    except IliasAuthError as exc:
+        set_meta(conn, "ilias_blocked", "1")
+        changelog.log(conn, actor="system", action="auth.expired", entity="ilias", detail={"reason": str(exc)[:200]})
+        notifier.send("🔑 ILIAS-Login fehlgeschlagen – ich versuche es nicht automatisch erneut (Kontosperre). "
+                      "Bitte Zugangsdaten prüfen und `planner ilias-login` ausführen.")
+    except Exception as exc:
+        log.exception("ILIAS-Sync fehlgeschlagen")
+        changelog.log(conn, actor="system", action="sync.error", entity="source", entity_id="ilias",
+                      detail={"error": f"{type(exc).__name__}: {exc}"[:300]})
+    finally:
+        client.close()
+    return None
+
+
 def _plan_step(conn: sqlite3.Connection, cal, tc, settings: Settings, notifier: Notifier, now: datetime) -> None:
     """Nur laufen lassen, wenn es etwas zu tun gibt (Aufgaben oder Vorschläge vorhanden)."""
     has_work = conn.execute(
@@ -146,6 +190,7 @@ def sync_cycle(
     fetcher=None,
     calendar_factory=None,
     tasks_factory=None,
+    ilias_factory=None,
 ) -> None:
     now = now or datetime.now(UTC)
     _check_token_age(conn, notifier, now)
@@ -161,6 +206,9 @@ def sync_cycle(
             log.exception("Raumzeit-Sync fehlgeschlagen")
             changelog.log(conn, actor="system", action="sync.error", entity="source",
                           entity_id="raumzeit", detail={"error": f"{type(exc).__name__}: {exc}"[:300]})
+
+    # 1b) ILIAS-Neuigkeiten (erzeugt höchstens Vorschläge)
+    ilias_step(conn, settings, notifier, now, ilias_factory=ilias_factory)
 
     # 2) Nach Google spiegeln (nur Differenz)
     try:

@@ -17,6 +17,8 @@ class Settings:
     google_client_id: str
     google_client_secret: str
     raumzeit_ics_url: str = ""
+    hka_user: str = ""
+    hka_password: str = ""
     telegram_bot_token: str = ""
     telegram_user_id: int | None = None   # nur dieser Nutzer darf den Bot bedienen
 
@@ -27,6 +29,10 @@ class Settings:
     @property
     def db_path(self) -> Path:
         return self.data_dir / "planner.db"
+
+    @property
+    def ilias_session_path(self) -> Path:
+        return self.data_dir / "ilias_session.json"
 
     @property
     def rules_path(self) -> Path:
@@ -53,6 +59,8 @@ def load_settings() -> Settings:
         google_client_id=os.environ.get("GOOGLE_CLIENT_ID", ""),
         google_client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", ""),
         raumzeit_ics_url=os.environ.get("RAUMZEIT_ICS_URL", ""),
+        hka_user=os.environ.get("HKA_USER", "").strip(),
+        hka_password=os.environ.get("HKA_PASSWORD", ""),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_user_id=_int_or_none(os.environ.get("TELEGRAM_USER_ID")),
     )

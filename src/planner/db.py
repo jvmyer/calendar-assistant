@@ -35,6 +35,21 @@ CREATE TABLE IF NOT EXISTS tasks (
     UNIQUE (source, source_ref)
 );
 
+-- ILIAS-Neuigkeiten (Auslöser für Aufgaben aus Kursen); Erstimport gilt als „seen“
+CREATE TABLE IF NOT EXISTS ilias_news (
+    news_id    TEXT PRIMARY KEY,
+    ts         TEXT NOT NULL,            -- ISO 8601
+    author     TEXT,
+    uid        TEXT,
+    headline   TEXT,
+    obj_type   TEXT,
+    ref_id     TEXT,
+    title      TEXT,
+    body       TEXT,
+    first_seen TEXT NOT NULL,
+    state      TEXT NOT NULL DEFAULT 'new'   -- new | seen
+);
+
 -- Vorschläge („nice to know“): nichts davon landet ohne Bestätigung im Kalender
 CREATE TABLE IF NOT EXISTS proposals (
     id            INTEGER PRIMARY KEY,

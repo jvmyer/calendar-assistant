@@ -149,6 +149,53 @@ def cmd_bot(args) -> int:
     return 0
 
 
+def cmd_ilias_login(_args) -> int:
+    """Expliziter Login (genau ein Versuch); hebt die automatische Sperre nach einem Fehlschlag auf."""
+    from .connectors.ilias import IliasAuthError, IliasClient
+
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    client = IliasClient(settings.hka_user, settings.hka_password, settings.ilias_session_path)
+    try:
+        client.fetch_news_html()
+    except IliasAuthError as exc:
+        print(f"ILIAS-Login fehlgeschlagen: {exc}\nKein weiterer Versuch – bitte Zugangsdaten in .env prüfen.")
+        return 1
+    finally:
+        client.close()
+    set_meta(conn, "ilias_blocked", "0")
+    print("ILIAS-Login ok. Der Dienst darf ILIAS wieder abrufen.")
+    return 0
+
+
+def cmd_ilias_sync(_args) -> int:
+    """Einmal abrufen und anzeigen, was neu ist (erster Lauf = stiller Erstimport)."""
+    from .service import LogNotifier, ilias_step
+
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    res = ilias_step(conn, settings, LogNotifier(), datetime.now(UTC), force=True)
+    if res is None:
+        print("Nicht abgerufen (Zugangsdaten fehlen, gesperrt oder Fehler – siehe `planner log`).")
+        return 1
+    if res.initial:
+        print(f"Erstimport: {res.stored} Einträge gespeichert (keine Meldungen).")
+        return 0
+    print(f"{res.stored} neu gespeichert, davon {len(res.task_like)} aufgaben-artig (→ Vorschläge).")
+    for item in res.new:
+        mark = "💡" if item in res.task_like else "  "
+        print(f"{mark} {item.ts:%d.%m. %H:%M} {item.author[:20]:<20} {item.title[:70]}")
+    return 0
+
+
+def cmd_ilias_news(args) -> int:
+    from .bot_logic import ilias_overview
+
+    conn = connect(load_settings().db_path)
+    print(ilias_overview(conn, days=args.days, limit=args.n))
+    return 0
+
+
 def cmd_telegram_test(_args) -> int:
     """Schickt eine Testnachricht an den eingetragenen Nutzer (prüft Token, ID und ob /start gedrückt wurde)."""
     settings = load_settings()
@@ -406,6 +453,13 @@ def main(argv: list[str] | None = None) -> int:
     p_bot = sub.add_parser("bot", help="Nur den Telegram-Bot starten (ohne Google-Sync, zum Testen)")
     p_bot.add_argument("--minutes", type=int, default=0, help="nach n Minuten beenden (0 = bis Strg+C)")
     p_bot.set_defaults(fn=cmd_bot)
+    sub.add_parser("ilias-login", help="ILIAS-Login prüfen (1 Versuch) und Sperre aufheben").set_defaults(
+        fn=cmd_ilias_login)
+    sub.add_parser("ilias-sync", help="ILIAS-Neuigkeiten jetzt abrufen").set_defaults(fn=cmd_ilias_sync)
+    p_news = sub.add_parser("ilias-news", help="Gespeicherte ILIAS-Neuigkeiten anzeigen")
+    p_news.add_argument("--days", type=int, default=14)
+    p_news.add_argument("-n", type=int, default=20)
+    p_news.set_defaults(fn=cmd_ilias_news)
     sub.add_parser("telegram-test", help="Testnachricht an Telegram senden").set_defaults(fn=cmd_telegram_test)
     sub.add_parser("calendar-check", help="Kalender-Zugriff testen (nur lesend)").set_defaults(
         fn=cmd_calendar_check

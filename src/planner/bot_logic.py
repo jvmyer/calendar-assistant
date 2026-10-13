@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from . import areas, changelog, proposals, tasks
 from .quickadd import parse_quick
@@ -25,6 +25,7 @@ HELP = (
     "/aufgaben – offene Aufgaben (mit Buttons)\n"
     "/vorschlaege – offene Vorschläge\n"
     "/erledigt <Nr> · /verwerfen <Nr>\n"
+    "/ilias – neueste ILIAS-Neuigkeiten\n"
     "/log [n] – letzte Änderungen"
 )
 
@@ -140,6 +141,21 @@ def proposal_buttons(proposal_id: int) -> Buttons:
     return [[("✅ In den Kalender", f"acc:{proposal_id}"), ("❌ Nein danke", f"rej:{proposal_id}")]]
 
 
+def ilias_overview(conn: sqlite3.Connection, days: int = 14, limit: int = 8) -> str:
+    """Neueste ILIAS-Neuigkeiten aus der lokalen Datenbank (kein Netzwerkzugriff)."""
+    cutoff = (datetime.now(TZ) - timedelta(days=days)).isoformat()
+    rows = [r for r in conn.execute("SELECT * FROM ilias_news ORDER BY ts DESC LIMIT 200")
+            if datetime.fromisoformat(r["ts"]) >= datetime.fromisoformat(cutoff)][:limit]
+    if not rows:
+        return f"Keine ILIAS-Neuigkeiten in den letzten {days} Tagen."
+    lines = []
+    for r in rows:
+        ts = datetime.fromisoformat(r["ts"]).astimezone(TZ)
+        text = f" – {r['body'][:60]}" if r["body"] else ""
+        lines.append(f"{ts:%d.%m.} {r['title'][:60]}{text}  ({r['author'].split(',')[0][:18]})")
+    return "\n".join(lines)
+
+
 def log_reply(conn: sqlite3.Connection, n: int = 8) -> str:
     rows = changelog.recent(conn, max(1, min(n, 20)))
     if not rows:
@@ -182,6 +198,8 @@ def handle_message(
             return open_tasks_reply(conn)
         if cmd in {"/vorschlaege", "/vorschläge"}:
             return proposals_reply(conn)
+        if cmd == "/ilias":
+            return Reply(ilias_overview(conn))
         if cmd == "/log":
             return Reply(log_reply(conn, int(arg) if arg.isdigit() else 8))
         if cmd == "/erledigt":
