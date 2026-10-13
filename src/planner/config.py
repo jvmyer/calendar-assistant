@@ -17,6 +17,12 @@ class Settings:
     google_client_id: str
     google_client_secret: str
     raumzeit_ics_url: str = ""
+    telegram_bot_token: str = ""
+    telegram_user_id: int | None = None   # nur dieser Nutzer darf den Bot bedienen
+
+    @property
+    def telegram_enabled(self) -> bool:
+        return bool(self.telegram_bot_token and self.telegram_user_id)
 
     @property
     def db_path(self) -> Path:
@@ -31,6 +37,13 @@ class Settings:
         return self.data_dir / "google_token.json"
 
 
+def _int_or_none(value: str | None) -> int | None:
+    try:
+        return int(value.strip()) if value else None
+    except ValueError:
+        return None
+
+
 def load_settings() -> Settings:
     load_dotenv(PROJECT_ROOT / ".env")
     data_dir = Path(os.environ.get("PLANNER_DATA_DIR") or PROJECT_ROOT / "data")
@@ -40,4 +53,6 @@ def load_settings() -> Settings:
         google_client_id=os.environ.get("GOOGLE_CLIENT_ID", ""),
         google_client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", ""),
         raumzeit_ics_url=os.environ.get("RAUMZEIT_ICS_URL", ""),
+        telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_user_id=_int_or_none(os.environ.get("TELEGRAM_USER_ID")),
     )

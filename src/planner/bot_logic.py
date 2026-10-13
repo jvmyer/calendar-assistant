@@ -1,0 +1,236 @@
+"""Bot-Logik ohne Telegram-Abhängigkeit: Nachricht rein → Antwort (Text + Buttons) raus.
+
+So bleibt alles testbar; `telegram_bot.py` ist nur der dünne Anschluss an die Telegram-API.
+Jede Änderung geht über dieselben Module wie die CLI und landet damit im Change-Log
+(Akteur `user`).
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from . import areas, changelog, proposals, tasks
+from .quickadd import parse_quick
+from .rules import TZ
+
+Buttons = list[list[tuple[str, str]]]   # Zeilen aus (Beschriftung, callback_data)
+
+HELP = (
+    "Schreib mir einfach eine Aufgabe, z. B.:\n"
+    "  Bericht schreiben bis 20.10. 2h #Uni\n"
+    "(bis <Datum|morgen|Freitag> [Uhrzeit] · Aufwand wie 2h/45min · #Bereich)\n\n"
+    "/heute – Termine, Blocker und Fälliges von heute\n"
+    "/aufgaben – offene Aufgaben (mit Buttons)\n"
+    "/vorschlaege – offene Vorschläge\n"
+    "/erledigt <Nr> · /verwerfen <Nr>\n"
+    "/log [n] – letzte Änderungen"
+)
+
+
+@dataclass
+class Reply:
+    text: str
+    buttons: Buttons = field(default_factory=list)
+    changed: bool = False   # True → Planer soll sofort neu laufen
+
+
+def fmt_minutes(minutes: int) -> str:
+    if minutes % 60 == 0:
+        return f"{minutes // 60} h"
+    return f"{minutes} Min." if minutes < 60 else f"{minutes // 60} h {minutes % 60} Min."
+
+
+def fmt_deadline(value: str) -> str:
+    if len(value) == 10:
+        return datetime.fromisoformat(value).strftime("%d.%m.")
+    return datetime.fromisoformat(value).astimezone(TZ).strftime("%d.%m. %H:%M")
+
+
+def _task_line(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
+    bits = [f"#{row['id']} {row['title']}"]
+    if row["deadline"]:
+        bits.append(f"bis {fmt_deadline(row['deadline'])}")
+    if row["estimate_min"]:
+        bits.append(fmt_minutes(row["estimate_min"]))
+    area = areas.path_of(conn, row["area_id"])
+    if area:
+        bits.append(f"#{area}")
+    return " · ".join(bits)
+
+
+def _task_buttons(task_id: int) -> list[tuple[str, str]]:
+    return [(f"✅ #{task_id} erledigt", f"done:{task_id}"), (f"🗑 #{task_id} verwerfen", f"drop:{task_id}")]
+
+
+def _title(conn: sqlite3.Connection, table: str, row_id: int) -> str:
+    row = conn.execute(f"SELECT title FROM {table} WHERE id = ?", (row_id,)).fetchone()
+    return row["title"] if row else f"#{row_id}"
+
+
+# -- Kommandos ------------------------------------------------------------------------------
+def today_overview(conn: sqlite3.Connection, now: datetime | None = None) -> str:
+    now = (now or datetime.now(TZ)).astimezone(TZ)
+    today = now.date()
+    lines: list[str] = []
+
+    events = [
+        r for r in conn.execute(
+            "SELECT * FROM external_events WHERE state = 'active' AND all_day = 0 ORDER BY start")
+        if datetime.fromisoformat(r["start"]).astimezone(TZ).date() == today
+    ]
+    if events:
+        lines.append("📅 Termine")
+        for r in events:
+            s, e = (datetime.fromisoformat(r[k]).astimezone(TZ) for k in ("start", "end"))
+            room = f" ({r['location']})" if r["location"] else ""
+            lines.append(f"  {s:%H:%M}–{e:%H:%M} {r['title']}{room}")
+
+    blocks = [
+        r for r in conn.execute(
+            "SELECT b.start, b.end, t.title FROM blocks b JOIN tasks t ON t.id = b.task_id "
+            "WHERE b.state = 'active' AND t.status = 'open' ORDER BY b.start")
+        if datetime.fromisoformat(r["start"]).astimezone(TZ).date() == today
+    ]
+    if blocks:
+        lines.append("🧱 Geplant")
+        for r in blocks:
+            s, e = (datetime.fromisoformat(r[k]).astimezone(TZ) for k in ("start", "end"))
+            lines.append(f"  {s:%H:%M}–{e:%H:%M} {r['title']}")
+
+    due = []
+    for r in tasks.open_tasks(conn):
+        if r["deadline"] and tasks_deadline_date(r["deadline"]) <= today:
+            overdue = tasks_deadline_date(r["deadline"]) < today
+            due.append(f"  {'⏰ überfällig: ' if overdue else ''}{_task_line(conn, r)}")
+    if due:
+        lines.append("❗ Fällig")
+        lines += due
+
+    return "\n".join(lines) if lines else "Heute ist nichts geplant."
+
+
+def tasks_deadline_date(value: str):
+    from .parsing import deadline_to_dt
+
+    return deadline_to_dt(value).astimezone(TZ).date()
+
+
+def open_tasks_reply(conn: sqlite3.Connection, limit: int = 10) -> Reply:
+    rows = tasks.open_tasks(conn)
+    if not rows:
+        return Reply("Keine offenen Aufgaben. 🎉")
+    shown = rows[:limit]
+    text = "\n".join(_task_line(conn, r) for r in shown)
+    if len(rows) > limit:
+        text += f"\n… und {len(rows) - limit} weitere"
+    return Reply(text, [_task_buttons(int(r["id"])) for r in shown])
+
+
+def proposals_reply(conn: sqlite3.Connection) -> Reply:
+    rows = proposals.pending(conn)
+    if not rows:
+        return Reply("Keine offenen Vorschläge.")
+    return Reply("\n".join(proposals.describe(r) for r in rows),
+                 [[(f"✅ #{r['id']} ja", f"acc:{r['id']}"), (f"❌ #{r['id']} nein", f"rej:{r['id']}")] for r in rows])
+
+
+def proposal_buttons(proposal_id: int) -> Buttons:
+    return [[("✅ In den Kalender", f"acc:{proposal_id}"), ("❌ Nein danke", f"rej:{proposal_id}")]]
+
+
+def log_reply(conn: sqlite3.Connection, n: int = 8) -> str:
+    rows = changelog.recent(conn, max(1, min(n, 20)))
+    if not rows:
+        return "Noch keine Einträge."
+    out = []
+    for r in reversed(rows):
+        ts = datetime.fromisoformat(r["ts"]).astimezone(TZ).strftime("%d.%m. %H:%M")
+        why = f" – {r['reason']}" if r["reason"] else ""
+        out.append(f"{ts} {r['action']} {r['entity']}:{r['entity_id'] or '-'}{why}")
+    return "\n".join(out)
+
+
+def _set_status(conn: sqlite3.Connection, arg: str, status: str) -> Reply:
+    try:
+        task_id = int(arg.lstrip("#"))
+        title = _title(conn, "tasks", task_id)
+        tasks.set_status(conn, task_id, status, actor="user")
+    except (ValueError, KeyError):
+        return Reply("Welche Aufgabe? Beispiel: /erledigt 3")
+    verb = "erledigt ✅" if status == "done" else "verworfen 🗑"
+    return Reply(f"#{task_id} „{title}“ {verb}.", changed=True)
+
+
+# -- Einstiegspunkte ----------------------------------------------------------------------
+def handle_message(
+    conn: sqlite3.Connection, text: str, *, message_id: int | None = None, now: datetime | None = None
+) -> Reply:
+    text = (text or "").strip()
+    if not text:
+        return Reply(HELP)
+    if text.startswith("/"):
+        cmd, _, arg = text.partition(" ")
+        cmd = cmd.split("@")[0].lower()
+        arg = arg.strip()
+        if cmd in {"/start", "/hilfe", "/help"}:
+            return Reply(HELP)
+        if cmd == "/heute":
+            return Reply(today_overview(conn, now))
+        if cmd == "/aufgaben":
+            return open_tasks_reply(conn)
+        if cmd in {"/vorschlaege", "/vorschläge"}:
+            return proposals_reply(conn)
+        if cmd == "/log":
+            return Reply(log_reply(conn, int(arg) if arg.isdigit() else 8))
+        if cmd == "/erledigt":
+            return _set_status(conn, arg, "done")
+        if cmd == "/verwerfen":
+            return _set_status(conn, arg, "dropped")
+        return Reply("Das Kommando kenne ich nicht.\n\n" + HELP)
+    return quick_add(conn, text, message_id=message_id, now=now)
+
+
+def quick_add(
+    conn: sqlite3.Connection, text: str, *, message_id: int | None = None, now: datetime | None = None
+) -> Reply:
+    today = (now or datetime.now(TZ)).astimezone(TZ).date()
+    try:
+        q = parse_quick(text, today=today)
+    except ValueError as exc:
+        return Reply(str(exc))
+    area_id = areas.ensure_path(conn, q.area, actor="user") if q.area else None
+    task_id = tasks.add_task(
+        conn, title=q.title, source="telegram", actor="user", area_id=area_id, deadline=q.deadline,
+        estimate_min=q.estimate_min, source_ref=f"msg:{message_id}" if message_id else None)
+    if task_id is None:
+        return Reply("Diese Nachricht hatte ich schon als Aufgabe angelegt.")
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return Reply(f"✅ Aufgabe angelegt:\n{_task_line(conn, row)}\nIch plane sie ein.",
+                 [_task_buttons(task_id)], changed=True)
+
+
+def handle_callback(conn: sqlite3.Connection, data: str) -> Reply:
+    action, _, raw = (data or "").partition(":")
+    try:
+        item_id = int(raw)
+    except ValueError:
+        return Reply("Unbekannte Aktion.")
+    try:
+        if action == "acc":
+            title = _title(conn, "proposals", item_id)
+            task_id = proposals.accept(conn, item_id, actor="user")
+            what = f"als Aufgabe #{task_id} übernommen" if task_id else "wird in den Kalender eingetragen"
+            return Reply(f"✅ „{title}“ {what}.", changed=True)
+        if action == "rej":
+            title = _title(conn, "proposals", item_id)
+            proposals.reject(conn, item_id, actor="user")
+            return Reply(f"❌ „{title}“ verworfen – es landet nichts im Kalender.")
+        if action in {"done", "drop"}:
+            return _set_status(conn, str(item_id), "done" if action == "done" else "dropped")
+    except KeyError:
+        return Reply("Das gibt es nicht mehr.")
+    except ValueError as exc:
+        return Reply(str(exc))   # z. B. „Vorschlag #3 ist schon accepted“
+    return Reply("Unbekannte Aktion.")

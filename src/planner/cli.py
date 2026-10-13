@@ -86,20 +86,79 @@ def cmd_mirror_raumzeit(_args) -> int:
     return 0
 
 
+def make_notifier(settings):
+    """Telegram, wenn konfiguriert; sonst nur Log-Ausgabe."""
+    from .service import LogNotifier
+
+    if settings.telegram_enabled:
+        from .telegram_bot import TelegramNotifier
+
+        return TelegramNotifier(settings.telegram_bot_token, settings.telegram_user_id)
+    return LogNotifier()
+
+
 def cmd_run(args) -> int:
-    from .service import LogNotifier, run_forever, sync_cycle
+    from .service import run_forever, sync_cycle
 
     settings = load_settings()
     conn = connect(settings.db_path)
     import logging
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    notifier = LogNotifier()
+    notifier = make_notifier(settings)
+    bot_starter = None
+    if settings.telegram_enabled:
+        from .telegram_bot import quiet_http_loggers, start_bot
+
+        quiet_http_loggers()   # Token steckt in den API-URLs → nie loggen
+        bot_starter = lambda wake, stop: start_bot(settings, wake, stop)
+    else:
+        logging.getLogger("planner").warning("Telegram nicht konfiguriert (TELEGRAM_BOT_TOKEN/TELEGRAM_USER_ID) – nur Log")
     if args.once:
         sync_cycle(conn, settings, notifier)
         return 0
-    run_forever(conn, settings, notifier, interval_min=args.interval)
+    run_forever(conn, settings, notifier, interval_min=args.interval, bot_starter=bot_starter)
     return 0
+
+
+def cmd_bot(args) -> int:
+    """Nur der Telegram-Empfang, ohne Google-Sync (zum Testen). Strg+C oder --minutes beendet."""
+    import logging
+    import threading
+    import time
+
+    from .telegram_bot import quiet_http_loggers, start_bot
+
+    settings = load_settings()
+    if not settings.telegram_enabled:
+        print("TELEGRAM_BOT_TOKEN und/oder TELEGRAM_USER_ID fehlen in .env")
+        return 1
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    quiet_http_loggers()
+    stop, wake = threading.Event(), threading.Event()
+    start_bot(settings, wake, stop)
+    end = time.monotonic() + args.minutes * 60 if args.minutes else None
+    try:
+        while end is None or time.monotonic() < end:
+            time.sleep(1)
+            wake.clear()   # ohne Sync gibt es nichts zu wecken
+    except KeyboardInterrupt:
+        pass
+    stop.set()
+    time.sleep(2)
+    return 0
+
+
+def cmd_telegram_test(_args) -> int:
+    """Schickt eine Testnachricht an den eingetragenen Nutzer (prüft Token, ID und ob /start gedrückt wurde)."""
+    settings = load_settings()
+    if not settings.telegram_enabled:
+        print("TELEGRAM_BOT_TOKEN und/oder TELEGRAM_USER_ID fehlen in .env")
+        return 1
+    ok = make_notifier(settings).send("✅ Planer-Bot verbunden. Schreib /hilfe für die Befehle.")
+    print("Testnachricht gesendet." if ok else
+          "Senden fehlgeschlagen. Token falsch? Hast du dem Bot in Telegram einmal „Start“ geschickt?")
+    return 0 if ok else 1
 
 
 def cmd_log(args) -> int:
@@ -344,6 +403,10 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--once", action="store_true", help="Nur einen Durchlauf, dann beenden")
     p_run.add_argument("--interval", type=int, default=30, help="Minuten zwischen Läufen (min. 30)")
     p_run.set_defaults(fn=cmd_run)
+    p_bot = sub.add_parser("bot", help="Nur den Telegram-Bot starten (ohne Google-Sync, zum Testen)")
+    p_bot.add_argument("--minutes", type=int, default=0, help="nach n Minuten beenden (0 = bis Strg+C)")
+    p_bot.set_defaults(fn=cmd_bot)
+    sub.add_parser("telegram-test", help="Testnachricht an Telegram senden").set_defaults(fn=cmd_telegram_test)
     sub.add_parser("calendar-check", help="Kalender-Zugriff testen (nur lesend)").set_defaults(
         fn=cmd_calendar_check
     )

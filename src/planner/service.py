@@ -34,12 +34,15 @@ MAX_LINES = 8
 
 
 class Notifier(Protocol):
-    def send(self, text: str) -> None: ...
+    """Meldungskanal. Optional: `send_proposal(id, text) -> bool` für Kanäle mit Buttons (Telegram)."""
+
+    def send(self, text: str) -> object: ...
 
 
 class LogNotifier:
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> bool:
         log.info("MELDUNG: %s", text.replace("\n", " | "))
+        return True
 
 
 def _fmt(ev: Event) -> str:
@@ -108,10 +111,21 @@ def planning_step(
     if tc is not None:
         _guarded(conn, "gtasks.push", lambda: gtasks.push(
             conn, tc, now=now, unplaced=report.unplaced if report else None))
-    text, ids = proposals.take_unnotified(conn)
-    if text:
+    _notify_proposals(conn, notifier)
+
+
+def _notify_proposals(conn: sqlite3.Connection, notifier: Notifier) -> None:
+    """Neue Vorschläge melden – mit Buttons, wenn der Kanal es kann. Nur als gemeldet markieren, wenn es klappte."""
+    items = proposals.unnotified_items(conn)
+    if not items:
+        return
+    if hasattr(notifier, "send_proposal"):
+        sent = [pid for pid, text in items if notifier.send_proposal(pid, text)]
+    else:
+        text, ids = proposals.take_unnotified(conn)
         notifier.send(text)
-        proposals.mark_notified(conn, ids)
+        sent = ids
+    proposals.mark_notified(conn, sent)
 
 
 def _plan_step(conn: sqlite3.Connection, cal, tc, settings: Settings, notifier: Notifier, now: datetime) -> None:
@@ -173,15 +187,27 @@ def sync_cycle(
 
 
 def run_forever(
-    conn: sqlite3.Connection, settings: Settings, notifier: Notifier, *, interval_min: int = 30
+    conn: sqlite3.Connection,
+    settings: Settings,
+    notifier: Notifier,
+    *,
+    interval_min: int = 30,
+    bot_starter=None,
 ) -> None:
+    """Dauerlauf. `bot_starter(wake, stop)` startet optional den Telegram-Empfang; setzt der Bot
+    `wake` (neue Aufgabe, Bestätigung …), läuft der Planungsdurchlauf sofort statt erst im Takt."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     interval = max(interval_min, MIN_INTERVAL_MIN) * 60
-    stop = threading.Event()
+    stop, wake = threading.Event(), threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
+    if bot_starter is not None:
+        bot_starter(wake, stop)
     log.info("Dienst gestartet (Takt: %d Min.)", interval // 60)
     while not stop.is_set():
+        wake.clear()
         sync_cycle(conn, settings, notifier)
-        stop.wait(interval)
+        for _ in range(interval // 2):   # kurzer Takt, damit Bot-Eingaben sofort wirken
+            if stop.wait(2) or wake.is_set():
+                break
     log.info("Dienst beendet")
