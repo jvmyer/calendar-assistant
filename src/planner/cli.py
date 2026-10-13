@@ -129,9 +129,206 @@ def cmd_calendar_check(_args) -> int:
     return 0
 
 
+def cmd_add(args) -> int:
+    from . import areas, tasks
+    from .parsing import parse_deadline, parse_estimate
+
+    conn = connect(load_settings().db_path)
+    try:
+        deadline = parse_deadline(args.deadline) if args.deadline else None
+        estimate = parse_estimate(args.est) if args.est else None
+    except ValueError as exc:
+        print(exc)
+        return 1
+    area_id = areas.ensure_path(conn, args.area, actor="user") if args.area else None
+    task_id = tasks.add_task(conn, title=args.title, source="manual", actor="user", area_id=area_id,
+                             deadline=deadline, estimate_min=estimate)
+    if args.boost != 1.0:
+        conn.execute("UPDATE tasks SET priority_boost = ? WHERE id = ?", (args.boost, task_id))
+        conn.commit()
+    print(f"Aufgabe #{task_id} angelegt. Mit `planner plan` einplanen (der Dienst tut das im Takt selbst).")
+    return 0
+
+
+def cmd_tasks(_args) -> int:
+    from . import areas, tasks
+
+    conn = connect(load_settings().db_path)
+    rows = tasks.open_tasks(conn)
+    if not rows:
+        print("Keine offenen Aufgaben.")
+    for t in rows:
+        est = f"{t['estimate_min']} Min." if t["estimate_min"] else "–"
+        print(f"#{t['id']:<4} {t['title']:<40} Deadline: {t['deadline'] or '–':<18} Aufwand: {est:<9} "
+              f"Bereich: {areas.path_of(conn, t['area_id']) or '–'}")
+    return 0
+
+
+def cmd_set_status(args) -> int:
+    from . import tasks
+
+    conn = connect(load_settings().db_path)
+    try:
+        tasks.set_status(conn, args.id, args.status, actor="user")
+    except KeyError:
+        print(f"Aufgabe #{args.id} gibt es nicht.")
+        return 1
+    print(f"Aufgabe #{args.id}: {args.status}. Die Blocker verschwinden beim nächsten Planungslauf.")
+    return 0
+
+
+def cmd_area(args) -> int:
+    from . import areas
+
+    conn = connect(load_settings().db_path)
+    if args.area_cmd == "set":
+        try:
+            area_id = areas.ensure_path(conn, args.path, actor="user")
+            areas.set_weight(conn, area_id, args.weight, actor="user")
+        except ValueError as exc:
+            print(exc)
+            return 1
+        print(f"{areas.path_of(conn, area_id)}: Gewicht {args.weight}")
+        return 0
+    nodes = areas.tree(conn)
+    if not nodes:
+        print("Noch keine Bereiche. Beispiel: planner area set Uni/Modul-X 0.8")
+    for depth, _id, name, weight in nodes:
+        print(f"{'  ' * depth}{name} ({weight})")
+    return 0
+
+
+class _PrintNotifier:
+    def send(self, text: str) -> None:
+        print(text)
+
+
+def cmd_plan(args) -> int:
+    from .gtasks import TasksClient
+    from .planning import describe_plan, run_plan
+    from .rules import load_rules
+    from .service import planning_step
+
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    try:
+        rules = load_rules(settings.rules_path)
+        creds = get_credentials(settings)
+    except ReauthNeeded as exc:
+        print(f"Bitte `planner login` ausführen ({exc})")
+        return 1
+    except ValueError as exc:
+        print(f"rules.toml: {exc}")
+        return 1
+    cal = CalendarClient(creds, conn)
+    if args.dry_run:
+        report = run_plan(conn, cal, rules, dry_run=True)
+        print("[Probelauf, nichts in Kalender oder Tasks geschrieben]")
+        print(describe_plan(report) or "Plan unverändert.")
+        if report.pinned or report.removed_by_user:
+            print(f"Erkannt: {report.pinned} verschoben (gepinnt), {report.removed_by_user} gelöscht.")
+        return 0
+    planning_step(conn, cal, TasksClient(creds, conn), rules, _PrintNotifier(), datetime.now(UTC))
+    print("Planung abgeschlossen (Kalender-Blocker und Google Tasks aktuell).")
+    return 0
+
+
+def cmd_propose(args) -> int:
+    from . import areas, proposals
+    from .parsing import parse_deadline, parse_estimate
+
+    conn = connect(load_settings().db_path)
+    try:
+        start = parse_deadline(args.start) if args.start else None
+        end = parse_deadline(args.end) if args.end else None
+        if args.kind == "event" and not (start and end and "T" in start and "T" in end):
+            raise ValueError("Termin braucht --start und --end mit Uhrzeit, z. B. '5.11. 13:30'")
+        deadline = parse_deadline(args.deadline) if args.deadline else None
+        estimate = parse_estimate(args.est) if args.est else None
+        area_id = areas.ensure_path(conn, args.area, actor="user") if args.area else None
+        pid = proposals.add_proposal(conn, title=args.title, kind=args.kind, source="manual", actor="user",
+                                     start=start, end=end, deadline=deadline, estimate_min=estimate,
+                                     area_id=area_id, note=args.note)
+    except ValueError as exc:
+        print(exc)
+        return 1
+    print(f"Vorschlag #{pid} angelegt. Er kommt nur mit `planner accept {pid}` in den Kalender.")
+    return 0
+
+
+def cmd_proposals(_args) -> int:
+    from . import proposals
+
+    conn = connect(load_settings().db_path)
+    rows = proposals.pending(conn)
+    if not rows:
+        print("Keine offenen Vorschläge.")
+    for row in rows:
+        print(proposals.describe(row))
+    return 0
+
+
+def cmd_proposal_decision(args) -> int:
+    from . import proposals
+
+    conn = connect(load_settings().db_path)
+    try:
+        if args.accept:
+            task_id = proposals.accept(conn, args.id, actor="user")
+            print(f"Vorschlag #{args.id} bestätigt."
+                  + (f" Aufgabe #{task_id} angelegt." if task_id else " Der Termin wird beim nächsten `planner plan` bzw. Dienst-Lauf eingetragen."))
+        else:
+            proposals.reject(conn, args.id, actor="user")
+            print(f"Vorschlag #{args.id} verworfen – es landet nichts im Kalender.")
+    except KeyError:
+        print(f"Vorschlag #{args.id} gibt es nicht.")
+        return 1
+    except ValueError as exc:
+        print(exc)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="planner")
     sub = parser.add_subparsers(dest="cmd", required=True)
+    p_add = sub.add_parser("add", help="Aufgabe anlegen")
+    p_add.add_argument("title")
+    p_add.add_argument("--deadline", help="z. B. 2026-10-20, 20.10. oder '20.10. 18:00'")
+    p_add.add_argument("--est", help="Aufwand, z. B. 90, 45m, 2h")
+    p_add.add_argument("--area", help="Bereichspfad, z. B. Uni/Modul-X")
+    p_add.add_argument("--boost", type=float, default=1.0, help="manueller Prioritätsfaktor")
+    p_add.set_defaults(fn=cmd_add)
+    sub.add_parser("tasks", help="Offene Aufgaben anzeigen").set_defaults(fn=cmd_tasks)
+    for name, status, text in (("done", "done", "Aufgabe erledigt"), ("drop", "dropped", "Aufgabe verwerfen")):
+        p = sub.add_parser(name, help=text)
+        p.add_argument("id", type=int)
+        p.set_defaults(fn=cmd_set_status, status=status)
+    p_area = sub.add_parser("area", help="Bereiche und Gewichte")
+    area_sub = p_area.add_subparsers(dest="area_cmd", required=True)
+    area_sub.add_parser("list", help="Bereichsbaum anzeigen")
+    p_set = area_sub.add_parser("set", help="Bereich anlegen bzw. Gewicht setzen")
+    p_set.add_argument("path")
+    p_set.add_argument("weight", type=float)
+    p_area.set_defaults(fn=cmd_area)
+    p_prop = sub.add_parser("propose", help="Vorschlag anlegen (kommt nur nach Bestätigung in den Kalender)")
+    p_prop.add_argument("title")
+    p_prop.add_argument("--kind", choices=["event", "task"], default="event")
+    p_prop.add_argument("--start", help="Termin: Beginn, z. B. '5.11. 13:30'")
+    p_prop.add_argument("--end", help="Termin: Ende, z. B. '5.11. 17:30'")
+    p_prop.add_argument("--deadline", help="Aufgabe: Deadline")
+    p_prop.add_argument("--est", help="Aufgabe: Aufwand, z. B. 30m")
+    p_prop.add_argument("--area")
+    p_prop.add_argument("--note")
+    p_prop.set_defaults(fn=cmd_propose)
+    sub.add_parser("proposals", help="Offene Vorschläge anzeigen").set_defaults(fn=cmd_proposals)
+    for name, accept, text in (("accept", True, "Vorschlag bestätigen → Kalender"), ("reject", False, "Vorschlag verwerfen")):
+        p = sub.add_parser(name, help=text)
+        p.add_argument("id", type=int)
+        p.set_defaults(fn=cmd_proposal_decision, accept=accept)
+    p_plan = sub.add_parser("plan", help="Aufgaben jetzt einplanen")
+    p_plan.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts in den Kalender schreiben")
+    p_plan.set_defaults(fn=cmd_plan)
     sub.add_parser("login", help="Google-Login (öffnet den Browser)").set_defaults(fn=cmd_login)
     sub.add_parser("status", help="Zustand anzeigen").set_defaults(fn=cmd_status)
     p_log = sub.add_parser("log", help="Change-Log anzeigen")

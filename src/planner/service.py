@@ -15,13 +15,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from . import changelog
+from . import changelog, gtasks, proposals
 from .calendar_client import CalendarClient
 from .config import Settings
 from .connectors.ical_sync import Event, SyncResult, sync_url
 from .db import get_meta, set_meta
 from .google_auth import ReauthNeeded, get_credentials
+from .gtasks import TasksClient
 from .mirror import mirror_source
+from .planning import describe_plan, run_plan
+from .rules import Rules, load_rules
 
 log = logging.getLogger("planner")
 TZ = ZoneInfo("Europe/Berlin")
@@ -70,6 +73,56 @@ def _check_token_age(conn: sqlite3.Connection, notifier: Notifier, now: datetime
         set_meta(conn, "expiry_warned", "1")
 
 
+def _guarded(conn: sqlite3.Connection, entity: str, fn):
+    """Führt einen Teilschritt aus; Fehler landen im Change-Log, der Rest läuft weiter."""
+    try:
+        return fn()
+    except ReauthNeeded:
+        raise
+    except Exception as exc:
+        log.exception("%s fehlgeschlagen", entity)
+        changelog.log(conn, actor="system", action="sync.error", entity=entity,
+                      detail={"error": f"{type(exc).__name__}: {exc}"[:300]})
+        return None
+
+
+def planning_step(
+    conn: sqlite3.Connection, cal, tc, rules: Rules, notifier: Notifier, now: datetime
+) -> None:
+    """Ein Planungsdurchlauf in dieser Reihenfolge (jeder Schritt einzeln abgesichert):
+
+    1. Änderungen des Nutzers in Google Tasks lesen (abgehakt / gelöscht – der Mensch gewinnt)
+    2. bestätigte Termine in den Kalender eintragen
+    3. planen: Blocker setzen, wo Zeit ist
+    4. Google Tasks nachziehen: jede offene Aufgabe steht dort, auch wenn keine Zeit ist
+    5. neue Vorschläge melden (nichts davon kommt ohne Bestätigung in den Kalender)
+    """
+    if tc is not None:
+        _guarded(conn, "gtasks.pull", lambda: gtasks.pull_changes(conn, tc))
+    _guarded(conn, "proposals", lambda: proposals.materialize_events(conn, cal))
+    report = _guarded(conn, "planner", lambda: run_plan(conn, cal, rules, now=now))
+    if report is not None:
+        msg = describe_plan(report)
+        if msg:
+            notifier.send(msg)
+    if tc is not None:
+        _guarded(conn, "gtasks.push", lambda: gtasks.push(
+            conn, tc, now=now, unplaced=report.unplaced if report else None))
+    text, ids = proposals.take_unnotified(conn)
+    if text:
+        notifier.send(text)
+        proposals.mark_notified(conn, ids)
+
+
+def _plan_step(conn: sqlite3.Connection, cal, tc, settings: Settings, notifier: Notifier, now: datetime) -> None:
+    """Nur laufen lassen, wenn es etwas zu tun gibt (Aufgaben oder Vorschläge vorhanden)."""
+    has_work = conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM tasks) OR EXISTS(SELECT 1 FROM proposals)"
+    ).fetchone()[0]
+    if has_work:
+        planning_step(conn, cal, tc, load_rules(settings.rules_path), notifier, now)
+
+
 def sync_cycle(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -78,6 +131,7 @@ def sync_cycle(
     now: datetime | None = None,
     fetcher=None,
     calendar_factory=None,
+    tasks_factory=None,
 ) -> None:
     now = now or datetime.now(UTC)
     _check_token_age(conn, notifier, now)
@@ -98,11 +152,14 @@ def sync_cycle(
     try:
         if calendar_factory is not None:
             cal = calendar_factory()
+            tc = tasks_factory() if tasks_factory is not None else None
         else:
-            cal = CalendarClient(get_credentials(settings), conn)
+            creds = get_credentials(settings)
+            cal, tc = CalendarClient(creds, conn), TasksClient(creds, conn)
         cal_id = cal.ensure_calendar("Stundenplan", "calendar_id:stundenplan", "Aus raumzeit gespiegelt")
         mirror_source(conn, cal, source="raumzeit", calendar_id=cal_id, now=now)
         set_meta(conn, "reauth_notified", "0")
+        _plan_step(conn, cal, tc, settings, notifier, now)
     except ReauthNeeded as exc:
         if get_meta(conn, "reauth_notified") != "1":  # nur einmal melden, nicht alle 30 Min.
             notifier.send("🔑 Google-Login abgelaufen. Bitte `planner login` ausführen.")

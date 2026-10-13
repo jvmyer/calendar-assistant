@@ -48,7 +48,7 @@ Nutzung: nur für mich selbst (Single-User). Kein öffentliches Login-System, ke
 | Quelle | Zugang | Bemerkung |
 |---|---|---|
 | Gmail | Gmail-API über dasselbe OAuth-Projekt wie Calendar (Fallback: IMAP + App-Passwort) | Für Eigennutzung keine Verifizierung nötig („unverified app“-Hinweis einmalig bestätigen). App-Passwörter gelten als Auslaufmodell. |
-| HKA-Mail | **OWA-Webzugang** `https://owa-cert.h-ka.de`: Formular-Login (`/owa/auth.owa`) mit **HARICA-Client-Zertifikat** + RZ-Kürzel/Passwort, danach OWA-JSON-Schnittstelle (`/owa/service.svc`, Browser-User-Agent, `X-OWA-CANARY`) nur **lesend** | Kein IMAP. EWS/NTLM (offiziell laut RZ-Handout) scheitert bei uns (401 / Verbindungsabbruch), Ursache unklar. OWA-Weg ist inoffiziell → kann bei OWA-Updates brechen. Sitzung wiederverwenden, nie automatisch bei Fehler neu einloggen (Fehlerzähler!). Login-Test am 2026-10-12 erfolgreich. |
+| HKA-Mail | **OWA-Webzugang** `https://owa-cert.h-ka.de`: Formular-Login (`/owa/auth.owa`) mit **HARICA-Client-Zertifikat** + RZ-Kürzel/Passwort, danach OWA-JSON-Schnittstelle (`/owa/service.svc`, Browser-User-Agent, `X-OWA-CANARY`) nur **lesend** | Kein IMAP. EWS/NTLM (offiziell laut RZ-Handout) scheitert bei uns (401 / Verbindungsabbruch), Ursache unklar. OWA-Weg ist inoffiziell → kann bei OWA-Updates brechen. Sitzung wiederverwenden, nie automatisch bei Fehler neu einloggen (Fehlerzähler!). Login-Test am 2026-10-12 erfolgreich. **2026-10-13: Abruf der 10 neuesten Mails erfolgreich** (Python `requests`): Client-Zertifikat = `hka_chain.pem` (Leaf + Zwischenzertifikat; nur das Leaf-Zertifikat führt zu „Connection closed“) + `hka_key.pem`; Header `Connection: close` (wiederverwendete Keep-Alive-Verbindungen werden gekappt); Login-Formular wird per JavaScript gebaut, POST direkt auf `/owa/auth.owa` (`destination, flags=4, forcedownlevel=0, username, password, passwordText, isUtf8=1`) → Cookie `cadata`; danach `GET /owa/` liefert `X-OWA-CANARY`; `POST /owa/service.svc?action=FindItem|GetItem`, Header `Action`, `X-OWA-CANARY`, Payload URL-kodiert in `X-OWA-UrlPostData` (Body leer), `BodyType: Text`. |
 | ILIAS HKA | iCal-Abo aus dem ILIAS-Kalender (`ilias.h-ka.de/calendar.php?…token=…`) | Endpoint existiert (öffentlich erreichbar). Abo-URL muss nach Login im ILIAS-Kalender über „Abonnieren“ kopiert werden. Fallback: SOAP-Webservice (`/webservice/soap/server.php`, erreichbar) oder Scraping. |
 | Stundenplan (raumzeit.hka-iwi.de) | persönlicher iCal-Feed, direkt abgerufen (Mindestabstand 30 min), Änderungserkennung per UID | **Entscheidung:** Direkt statt über Google-Abo (dort stundenlange Verzögerung; Google-Kalender „Uni“ war veraltet). Verschoben/entfallen/neu → Change-Log → Planer + Bot. Umgesetzt: `connectors/ical_sync.py`. |
 | Telegram | Bot-API (Long Polling) | Kein öffentlicher Port nötig, läuft hinter Heim-Router. |
@@ -57,8 +57,14 @@ Nutzung: nur für mich selbst (Single-User). Kein öffentliches Login-System, ke
 
 ## 5. Darstellung im Kalender
 
-- Jede eingeplante Aufgabe = **Blocker-Event** im Kalender + **verknüpfter Google Task** (für „Erledigt“).
+- **Jede echte Aufgabe steht immer als Google Task im Kalender** (Liste „Planer“, `gtasks.py`) – auch wenn keine Zeit mehr da ist. Eine wichtige Aufgabe darf nie untergehen.
+  - **Es ist Zeit:** zusätzlich ein **Blocker-Event** im Kalender „Planer“; die Task-Notiz nennt die Blocker-Zeiten.
+  - **Es ist keine Zeit:** nur die Task (fällig am Deadline-Tag, ohne Deadline heute); die Notiz sagt „ohne freien Slot“, und der Nutzer wird einmal pro Tag erinnert, bis es gelöst ist.
+  - Abhaken oder Löschen der Task in Google gilt als erledigt bzw. verworfen (der Mensch gewinnt) und räumt die Blocker ab. Wird die ganze Liste gelöscht, wird sie neu angelegt und alle offenen Aufgaben werden wiederhergestellt.
+  - Titel, Notiz und Fälligkeit gibt der Planer vor (Deadline ändert man im Planer, nicht in Google Tasks).
 - Einschränkung: Google Tasks speichert über die API nur das Fälligkeits*datum*, keine Uhrzeit. Die Uhrzeit trägt das Event; der Task dient als Checkbox.
+- **Vorschläge („gut zu wissen“, `proposals.py`):** Dinge wie Barcamp, Helfer gesucht oder Infoveranstaltungen sind keine Aufgabe. Sie werden dem Nutzer nur gemeldet (später per Telegram mit Buttons) und kommen **ausschließlich nach Bestätigung** in den Kalender (`planner accept <Nr>`); unbestätigt oder verworfen passiert nie etwas. Bestätigte Termine liegen im Kalender „Planer“ und zählen als belegte Zeit.
+- Grenze „Aufgabe vs. Vorschlag“ (für die spätere Mail-Extraktion): Aufgabe = jemand verlangt etwas von mir mit Frist oder Folgen (Abgabe, Antwort auf Anfrage, Pflicht-Anmeldung); Vorschlag = freiwillig oder reine Information.
 - Erkennung von Blockern über Metadaten (`extendedProperties` am Event), damit das Tool nur eigene Events verändert.
 - Blocker landen in einem **eigenen Nebenkalender „Planer“** im selben Google-Konto (gleiche Ansicht, eigene Farbe, ein-/ausblendbar). Der Hauptkalender wird nur gelesen.
 
@@ -96,7 +102,15 @@ Konfigurierbar, z. B.: Arbeitszeitfenster, Ruhezeiten, max. Stunden pro Bereich 
 
 ### Algorithmus (stufenweise)
 
-1. **MVP:** Greedy – Aufgaben nach Score sortieren, in frühestes passendes Zeitfenster legen, große Aufgaben in Blöcke splitten.
+1. **MVP (umgesetzt, `scheduler.py` + `planning.py`):** Greedy – Aufgaben nach Score sortieren, in frühestes passendes Zeitfenster legen, große Aufgaben in Blöcke splitten (min. 30 Min., max. 3 h pro Aufgabe und Tag).
+   - Belegt = alle Kalender außer „Planer“, Feiertags-/Import-Kalendern und `ignore_calendars`; Ganztägiges, „Frei“-Termine und abgelehnte Einladungen zählen nicht.
+   - Bereichsgewicht gilt direkt für den Knoten (Unterbereiche überschreiben, multiplizieren nicht).
+   - Stabilität: Blocker in heute + morgen bleiben stehen, außer sie kollidieren mit einem neuen Termin oder die Aufgabe ist erledigt.
+   - Mensch gewinnt: im Kalender **verschobener** Blocker → gepinnt; **gelöschter** Blocker → Zeitfenster wird nicht erneut belegt.
+   - Bereits vergangene Blocker zählen als gearbeitet; die Aufgabe bleibt offen, bis sie als erledigt markiert wird (`planner done`).
+   - Nicht unterbringbare Restzeit und überfällige Aufgaben werden gemeldet, danach einmal pro Tag erneut (nicht alle 30 Min.), bis sie gelöst sind.
+   - Reihenfolge: Scores innerhalb von 0,25 gelten als gleich, dann entscheidet die frühere Deadline (sonst nimmt eine große Aufgabe mit ferner Deadline einer knappen die frühen Slots weg).
+   - Regeln in `data/rules.toml` (Vorlage: `rules.example.toml`).
 2. **Später:** Constraint-Solver (Google OR-Tools CP-SAT) für globale Optimierung mit Stabilitäts-Strafterm (Umplanen kostet Punkte).
 
 ## 7. Lernende Aufwandsschätzung
@@ -167,6 +181,7 @@ Nach Schritt 4 ist das Tool bereits im Alltag nutzbar.
 - [ ] ILIAS: Abo-URL im Kalender kopieren und Inhalt prüfen
 - [x] Google-Cloud-Projekt angelegt (Calendar, Tasks, Gmail API aktiv, OAuth-Client in `.env`), bleibt im Teststatus (7-Tage-Login)
 - [ ] Bot-Funktion „Token abgelaufen → Re-Login“ einplanen (Phase 3)
-- [ ] Bereichsbaum und Regeln definieren
+- [ ] Bereichsbaum und Regeln definieren (Mechanik steht: `planner area set`, `rules.toml`; konkrete Werte festlegen)
+- [ ] ILIAS: Aufgaben/Assignments aus Kurs-Ankündigungen erkennen (regelmäßig auslesen; iCal liefert keine Abgabefristen)
 - [ ] Name
 - [ ] Arbeitskalender (später)
