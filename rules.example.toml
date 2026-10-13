@@ -1,0 +1,16 @@
+# Planungsregeln. Kopieren nach data/rules.toml und anpassen; fehlende Schlüssel nutzen den Standard.
+
+day_start = "09:00"                 # frühester Beginn eines Blockers
+day_end = "19:00"                   # spätestes Ende
+weekdays = ["mo", "di", "mi", "do", "fr", "sa"]
+buffer_min = 10                     # Abstand zu festen Terminen
+min_block_min = 30                  # kleinster sinnvoller Blocker
+max_task_per_day_min = 180          # pro Aufgabe und Tag
+default_estimate_min = 60           # wenn eine Aufgabe keine Schätzung hat
+horizon_days = 14                   # so weit wird vorausgeplant
+freeze_days = 2                     # heute + morgen bleiben stabil
+granularity_min = 15                # Blockanfänge auf diesem Raster
+
+# Kalender, die NICHT als „belegt“ zählen (Name wie in Google Kalender).
+# Feiertags- und Geburtstagskalender sowie Ganztägiges/„Frei“-Termine werden automatisch ignoriert.
+ignore_calendars = []

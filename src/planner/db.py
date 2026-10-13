@@ -35,6 +35,48 @@ CREATE TABLE IF NOT EXISTS tasks (
     UNIQUE (source, source_ref)
 );
 
+-- Vorschläge („nice to know“): nichts davon landet ohne Bestätigung im Kalender
+CREATE TABLE IF NOT EXISTS proposals (
+    id            INTEGER PRIMARY KEY,
+    kind          TEXT NOT NULL,                    -- task | event
+    title         TEXT NOT NULL,
+    note          TEXT,
+    source        TEXT NOT NULL,
+    source_ref    TEXT,
+    start         TEXT,                             -- nur event: ISO 8601 mit Offset
+    end           TEXT,
+    deadline      TEXT,                             -- nur task
+    estimate_min  INTEGER,
+    area_id       INTEGER REFERENCES areas(id),
+    state         TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted | rejected
+    notified      INTEGER NOT NULL DEFAULT 0,
+    gcal_event_id TEXT,                             -- gesetzt, sobald das Event im Kalender steht
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    UNIQUE (source, source_ref)
+);
+
+-- Zuordnung Aufgabe → Google Task (jede offene Aufgabe hat immer eine)
+CREATE TABLE IF NOT EXISTS gtasks (
+    task_id     INTEGER PRIMARY KEY REFERENCES tasks(id),
+    tasklist_id TEXT NOT NULL,
+    gtask_id    TEXT NOT NULL
+);
+
+-- Vom Planer eingetragene Blocker (Events im Nebenkalender „Planer“)
+CREATE TABLE IF NOT EXISTS blocks (
+    id            INTEGER PRIMARY KEY,
+    task_id       INTEGER NOT NULL REFERENCES tasks(id),
+    start         TEXT NOT NULL,            -- ISO 8601, UTC
+    end           TEXT NOT NULL,
+    gcal_event_id TEXT NOT NULL,
+    calendar_id   TEXT NOT NULL,
+    pinned        INTEGER NOT NULL DEFAULT 0,       -- 1 = vom Nutzer verschoben, Planer fasst nicht an
+    state         TEXT NOT NULL DEFAULT 'active',   -- active | removed (vom Nutzer gelöscht) | released
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_blocks_task ON blocks(task_id);
+
 -- Termine aus externen Quellen (Stundenplan etc.); Diff gegen den letzten Abruf
 CREATE TABLE IF NOT EXISTS external_events (
     source      TEXT NOT NULL,

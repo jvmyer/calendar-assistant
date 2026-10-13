@@ -23,6 +23,10 @@ class Settings:
         return self.data_dir / "planner.db"
 
     @property
+    def rules_path(self) -> Path:
+        return self.data_dir / "rules.toml"
+
+    @property
     def token_path(self) -> Path:
         return self.data_dir / "google_token.json"
 

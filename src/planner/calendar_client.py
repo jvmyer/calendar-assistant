@@ -90,17 +90,29 @@ class CalendarClient:
                 return events
 
     # -- Schreiben (nur Planer-Kalender) -----------------------------
-    def create_block(
-        self, title: str, start: datetime, end: datetime, *, task_id: int, description: str = ""
+    @staticmethod
+    def _block_body(
+        title: str, start: datetime, end: datetime, task_id: int, description: str
     ) -> dict[str, Any]:
-        body = {
+        return {
             "summary": title,
             "description": description,
             "start": {"dateTime": start.isoformat()},
             "end": {"dateTime": end.isoformat()},
             "extendedProperties": {"private": {OWNER_KEY: "1", "task_id": str(task_id)}},
         }
+
+    def create_block(
+        self, title: str, start: datetime, end: datetime, *, task_id: int, description: str = ""
+    ) -> dict[str, Any]:
+        body = self._block_body(title, start, end, task_id, description)
         return self._svc.events().insert(calendarId=self.ensure_planner_calendar(), body=body).execute()
 
+    def update_block(
+        self, event_id: str, title: str, start: datetime, end: datetime, *, task_id: int, description: str = ""
+    ) -> dict[str, Any]:
+        body = self._block_body(title, start, end, task_id, description)
+        return self.update_event(self.ensure_planner_calendar(), event_id, body)
+
     def delete_block(self, event_id: str) -> None:
-        self._svc.events().delete(calendarId=self.ensure_planner_calendar(), eventId=event_id).execute()
+        self.remove_event(self.ensure_planner_calendar(), event_id)

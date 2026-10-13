@@ -42,7 +42,9 @@ def add_task(
     return task_id
 
 
-def set_status(conn: sqlite3.Connection, task_id: int, status: str, *, actor: str) -> None:
+def set_status(
+    conn: sqlite3.Connection, task_id: int, status: str, *, actor: str, reason: str | None = None
+) -> None:
     if status not in {"open", "done", "dropped"}:
         raise ValueError(f"unbekannter Status: {status}")
     row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -59,6 +61,7 @@ def set_status(conn: sqlite3.Connection, task_id: int, status: str, *, actor: st
         entity="task",
         entity_id=task_id,
         detail={"from": row["status"], "to": status},
+        reason=reason,
     )
 
 
