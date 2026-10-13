@@ -67,3 +67,21 @@ def set_status(
 
 def open_tasks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM tasks WHERE status = 'open' ORDER BY id").fetchall()
+
+
+def _update(conn: sqlite3.Connection, task_id: int, column: str, value, *, actor: str) -> None:
+    row = conn.execute(f"SELECT {column} FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise KeyError(task_id)
+    conn.execute(f"UPDATE tasks SET {column} = ?, updated_at = ? WHERE id = ?", (value, now_iso(), task_id))
+    conn.commit()
+    changelog.log(conn, actor=actor, action="task.updated", entity="task", entity_id=task_id,
+                  detail={"field": column, "from": row[column], "to": value})
+
+
+def set_deadline(conn: sqlite3.Connection, task_id: int, deadline: str | None, *, actor: str) -> None:
+    _update(conn, task_id, "deadline", deadline, actor=actor)
+
+
+def set_estimate(conn: sqlite3.Connection, task_id: int, minutes: int | None, *, actor: str) -> None:
+    _update(conn, task_id, "estimate_min", minutes, actor=actor)

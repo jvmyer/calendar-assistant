@@ -19,10 +19,16 @@ from . import changelog, gtasks, proposals
 from .calendar_client import CalendarClient
 from .config import Settings
 from .connectors.ical_sync import Event, SyncResult, sync_url
-from .connectors.ilias import IliasAuthError, IliasClient, NewsSyncResult, sync_news
+from .connectors.ilias import (
+    IliasAuthError,
+    IliasClient,
+    NewsSyncResult,
+    sync_news,
+)
 from .db import get_meta, set_meta
 from .google_auth import ReauthNeeded, get_credentials
 from .gtasks import TasksClient
+from .ilias_flow import process_news
 from .mirror import mirror_source
 from .planning import describe_plan, run_plan
 from .rules import Rules, load_rules
@@ -44,6 +50,9 @@ class LogNotifier:
     def send(self, text: str) -> bool:
         log.info("MELDUNG: %s", text.replace("\n", " | "))
         return True
+
+    def send_with_buttons(self, text: str, buttons) -> bool:
+        return self.send(text)
 
 
 def _fmt(ev: Event) -> str:
@@ -136,7 +145,7 @@ def ilias_step(
     conn: sqlite3.Connection, settings: Settings, notifier: Notifier, now: datetime, *, ilias_factory=None,
     force: bool = False,
 ) -> NewsSyncResult | None:
-    """ILIAS-Neuigkeiten abrufen. Aufgaben-artige neue Einträge werden **Vorschläge** (nie direkt Aufgaben).
+    """ILIAS-Neuigkeiten abrufen; Aufgaben mit erkennbarer Frist werden automatisch eingetragen (`ilias_flow`).
 
     Höchstens ein Login-Versuch pro Lauf; nach einem Fehlschlag kein automatischer Retry
     (Kontosperre!), bis der Nutzer `planner ilias-login` ausführt.
@@ -153,10 +162,7 @@ def ilias_step(
     try:
         result = sync_news(conn, client.fetch_news_html(), now=now)
         set_meta(conn, "ilias_last_sync", now.isoformat())
-        for item in result.task_like:
-            proposals.add_proposal(
-                conn, title=f"ILIAS: {item.title}"[:200], kind="task", source="ilias", actor="ilias",
-                source_ref=item.news_id, note=f"{item.author} · {item.ts:%d.%m. %H:%M}\n{item.url}")
+        process_news(conn, client, notifier, now)
         return result
     except IliasAuthError as exc:
         set_meta(conn, "ilias_blocked", "1")

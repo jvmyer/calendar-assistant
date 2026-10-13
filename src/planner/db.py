@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS ilias_news (
     title      TEXT,
     body       TEXT,
     first_seen TEXT NOT NULL,
-    state      TEXT NOT NULL DEFAULT 'new'   -- new | seen
+    state      TEXT NOT NULL DEFAULT 'new',  -- new | seen
+    attempts   INTEGER NOT NULL DEFAULT 0    -- fehlgeschlagene Verarbeitungsversuche
 );
 
 -- Vorschläge („nice to know“): nichts davon landet ohne Bestätigung im Kalender
@@ -144,7 +145,16 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Spalten nachrüsten, die in älteren Datenbanken fehlen (CREATE IF NOT EXISTS ändert nichts)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(ilias_news)")}
+    if "attempts" not in cols:
+        conn.execute("ALTER TABLE ilias_news ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
 
 
 def get_meta(conn: sqlite3.Connection, key: str) -> str | None:

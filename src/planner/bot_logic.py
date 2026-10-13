@@ -25,6 +25,8 @@ HELP = (
     "/aufgaben – offene Aufgaben (mit Buttons)\n"
     "/vorschlaege – offene Vorschläge\n"
     "/erledigt <Nr> · /verwerfen <Nr>\n"
+    "/frist <Nr> <Datum|keine> – z. B. /frist 3 20.10. 18:00\n"
+    "/aufwand <Nr> <2h|45min>\n"
     "/ilias – neueste ILIAS-Neuigkeiten\n"
     "/log [n] – letzte Änderungen"
 )
@@ -168,6 +170,47 @@ def log_reply(conn: sqlite3.Connection, n: int = 8) -> str:
     return "\n".join(out)
 
 
+def _set_field(conn: sqlite3.Connection, arg: str, what: str) -> Reply:
+    """/frist <Nr> <Datum|keine> bzw. /aufwand <Nr> <Dauer>."""
+    from .parsing import parse_deadline, parse_estimate
+
+    num, _, value = arg.strip().partition(" ")
+    value = value.strip()
+    example = "/frist 3 20.10. 18:00" if what == "frist" else "/aufwand 3 2h"
+    if not num.lstrip("#").isdigit() or not value:
+        return Reply(f"So geht’s: {example}")
+    task_id = int(num.lstrip("#"))
+    try:
+        title = _title(conn, "tasks", task_id)
+        if what == "frist":
+            clear = value.lower() in {"keine", "-", "weg"}
+            tasks.set_deadline(conn, task_id, None if clear else parse_deadline(value), actor="user")
+            shown = "entfernt" if clear else f"bis {fmt_deadline(parse_deadline(value))}"
+        else:
+            minutes = parse_estimate(value)
+            tasks.set_estimate(conn, task_id, minutes, actor="user")
+            shown = fmt_minutes(minutes)
+    except KeyError:
+        return Reply(f"Aufgabe #{task_id} gibt es nicht.")
+    except ValueError as exc:
+        return Reply(str(exc))
+    return Reply(f"#{task_id} „{title}“: {shown} ✅", changed=True)
+
+
+def _ilias_to_task(conn: sqlite3.Connection, news_id: str) -> Reply:
+    """Button unter einer ILIAS-Meldung: erst auf Klick wird daraus eine Aufgabe."""
+    row = conn.execute("SELECT * FROM ilias_news WHERE news_id = ?", (news_id,)).fetchone()
+    if row is None:
+        return Reply("Den ILIAS-Eintrag gibt es nicht mehr.")
+    task_id = tasks.add_task(conn, title=f"ILIAS: {row['title']}"[:200], source="ilias", actor="user",
+                             source_ref=news_id)
+    if task_id is None:
+        return Reply("Dazu gibt es schon eine Aufgabe.")
+    return Reply(f"✅ Aufgabe #{task_id} angelegt: ILIAS: {row['title']}\n"
+                 f"Frist ergänzen: /frist {task_id} 20.10.  ·  Aufwand: /aufwand {task_id} 2h",
+                 [_task_buttons(task_id)], changed=True)
+
+
 def _set_status(conn: sqlite3.Connection, arg: str, status: str) -> Reply:
     try:
         task_id = int(arg.lstrip("#"))
@@ -202,6 +245,8 @@ def handle_message(
             return Reply(ilias_overview(conn))
         if cmd == "/log":
             return Reply(log_reply(conn, int(arg) if arg.isdigit() else 8))
+        if cmd in {"/frist", "/aufwand"}:
+            return _set_field(conn, arg, cmd[1:])
         if cmd == "/erledigt":
             return _set_status(conn, arg, "done")
         if cmd == "/verwerfen":
@@ -231,6 +276,8 @@ def quick_add(
 
 def handle_callback(conn: sqlite3.Connection, data: str) -> Reply:
     action, _, raw = (data or "").partition(":")
+    if action == "ilt":
+        return _ilias_to_task(conn, raw)
     try:
         item_id = int(raw)
     except ValueError:

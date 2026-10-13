@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from html import unescape
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -25,6 +25,7 @@ import httpx
 BASE = "https://ilias.h-ka.de/"
 NEWS_PATH = "ilias.php?baseClass=ilDashboardGUI&cmd=jumpToNews"
 LOGIN_FORM = re.compile(r'<form[^>]*name="login_form"[^>]*>(.*?)</form>', re.DOTALL)
+MAX_DOWNLOAD = 15 * 1024 * 1024   # größere Dateien (Videos, Archive) werden nicht geladen
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36"
 
 
@@ -88,6 +89,10 @@ def parse_news(html: str) -> list[NewsItem]:
         )
         items.setdefault(item.news_id, item)
     return list(items.values())
+
+
+class SkippedFile(ValueError):
+    """Dateityp wird nicht gelesen (Inhalt wurde nicht geladen)."""
 
 
 class IliasAuthError(Exception):
@@ -179,14 +184,70 @@ class IliasClient:
         filtered = self._http.get(url).text
         return filtered if "ilTimeline" in filtered else html
 
+    def breadcrumb(self, obj_type: str, ref_id: str) -> list[tuple[str, str, str]]:
+        """Pfad eines Objekts als (Typ, ref_id, Name), z. B. … → Kurs → Ordner."""
+        html = self.get_page(f"goto.php/{obj_type}/{ref_id}")
+        crumbs = []
+        for m in re.finditer(r'<a[^>]*href="[^"]*goto\.php/(\w+)/(\d+)[^"]*"[^>]*>([^<]{2,120})</a>', html):
+            if m.group(1) not in ("impr",):
+                crumbs.append((m.group(1), m.group(2), unescape(m.group(3)).strip()))
+        return crumbs
+
+    def course_of(self, obj_type: str, ref_id: str) -> str:
+        """Name des Kurses/der Gruppe, in der das Objekt liegt ('' wenn unbekannt)."""
+        for typ, _id, name in reversed(self.breadcrumb(obj_type, ref_id)):
+            if typ in ("crs", "grp"):
+                return name
+        return ""
+
+    def download_file(
+        self, ref_id: str, *, max_bytes: int = MAX_DOWNLOAD, accept=None
+    ) -> tuple[bytes, str, str]:
+        """Datei eines ILIAS-Dateiobjekts laden → (Inhalt, Content-Type, Dateiname). Mit Größenlimit.
+
+        `accept(filename, content_type) -> bool` (wie `documents.is_supported`) wird direkt nach den Headern geprüft; lehnt es ab,
+        wird der Inhalt gar nicht erst geladen (`SkippedFile`), z. B. bei Videos.
+        """
+        url = urljoin(BASE, f"ilias.php?baseClass=ilrepositorygui&cmd=sendfile&ref_id={ref_id}")
+        for attempt in (0, 1):
+            with self._http.stream("GET", url) as resp:
+                ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                if "html" in ctype:
+                    resp.read()
+                    if self.is_login_page(resp.text):
+                        if attempt == 0:
+                            self.login()   # Sitzung abgelaufen: einmal einloggen, dann nochmal
+                            continue
+                        raise IliasAuthError("Nach dem Login weiter Anmeldeseite")
+                    # Eine normale Seite statt Download (keine Berechtigung, kein Dateiobjekt):
+                    # betrifft nur diese Datei und ist kein Login-Problem.
+                    raise SkippedFile("Keine Datei (Seite statt Download, evtl. keine Berechtigung)")
+                disp = resp.headers.get("content-disposition", "")
+                found = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', disp)
+                filename = unquote(unescape(found.group(1))) if found else ""
+                if accept is not None and not accept(filename, ctype):   # Reihenfolge wie `is_supported`
+                    raise SkippedFile(f"Typ nicht gelesen: {ctype or filename}")
+                size = int(resp.headers.get("content-length") or 0)
+                if size > max_bytes:
+                    raise ValueError(f"Datei zu groß ({size} Bytes)")
+                buf = bytearray()
+                for chunk in resp.iter_bytes():
+                    buf += chunk
+                    if len(buf) > max_bytes:
+                        raise ValueError("Datei zu groß")
+                return bytes(buf), ctype, filename
+        raise IliasAuthError("Datei nicht abrufbar")
+
     def close(self) -> None:
         self._http.close()
 
 
 # -- Erkennung neuer Einträge ------------------------------------------------------------------
+# Bewusst eng: der Nutzer will nur wissen, wenn Assignments/Hausaufgaben erscheinen
+# (nicht bei Folien, Anmeldungen, Klausurinfos).
 TASK_HINTS = re.compile(
-    r"aufgabe|übung|uebung|abgabe|abgeben|einreichen|assignment|hausaufgabe|homework|exercise|deadline|"
-    r"frist|anmeld|klausur|prüfung|praktikum|bis zum|spätestens|zu bearbeiten|bearbeiten sie",
+    r"aufgabe|übung|uebung|abgabe|abgeben|einreichen|assignment|hausaufgabe|homework|exercise|"
+    r"worksheet|arbeitsblatt|deadline",
     re.IGNORECASE,
 )
 MAX_AGE_DAYS = 45   # ältere Einträge nie als „neu“ melden
@@ -203,9 +264,13 @@ class NewsSyncResult:
         return [i for i in self.new if looks_like_task(i)]
 
 
+def text_looks_like_task(title: str, headline: str = "", body: str = "") -> bool:
+    """Grobe Stichwortprüfung – nur Auswahl für eine Meldung, kein Urteil (Extraktion später per LLM)."""
+    return bool(TASK_HINTS.search(f"{title} {headline} {body}"))
+
+
 def looks_like_task(item: NewsItem) -> bool:
-    """Grobe Stichwortprüfung – Auswahl für Vorschläge, kein Urteil. Die Extraktion kommt später per LLM."""
-    return bool(TASK_HINTS.search(f"{item.title} {item.headline} {item.body}"))
+    return text_looks_like_task(item.title, item.headline, item.body)
 
 
 def sync_news(conn: sqlite3.Connection, html: str, *, now: datetime | None = None) -> NewsSyncResult:

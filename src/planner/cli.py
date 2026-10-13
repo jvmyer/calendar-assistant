@@ -181,9 +181,9 @@ def cmd_ilias_sync(_args) -> int:
     if res.initial:
         print(f"Erstimport: {res.stored} Einträge gespeichert (keine Meldungen).")
         return 0
-    print(f"{res.stored} neu gespeichert, davon {len(res.task_like)} aufgaben-artig (→ Vorschläge).")
+    print(f"{res.stored} neu gespeichert, davon {len(res.task_like)} aufgaben-artig (→ Telegram-Meldung).")
     for item in res.new:
-        mark = "💡" if item in res.task_like else "  "
+        mark = "📚" if item in res.task_like else "  "
         print(f"{mark} {item.ts:%d.%m. %H:%M} {item.author[:20]:<20} {item.title[:70]}")
     return 0
 

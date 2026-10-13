@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from planner import proposals
-from planner.bot_logic import handle_message, ilias_overview
+from planner.bot_logic import handle_callback, handle_message, ilias_overview
 from planner.config import Settings
 from planner.connectors.ilias import (
     BASE,
@@ -73,6 +73,11 @@ def test_author_falls_back_to_uid():
     ("Abgabe Übungsblatt 3", "", True),
     ("Vorlesung 2 Folien.pdf", "", False),
     ("Introduction Slides.pdf", "", False),
+    ("Klausuranmeldung WS 26.pdf", "", False),
+    ("Prüfungsinfos.pdf", "", False),
+    ("Praktikumsbörse.pdf", "", False),
+    ("Exercise 3 - sorting", "", True),
+    ("Worksheet Statistik.pdf", "", True),
     ("Frage", "Bitte bis zum 20.10. einreichen", True),
 ])
 def test_looks_like_task(title, body, expected):
@@ -117,14 +122,21 @@ class Collect:
 
 
 class FakeIlias:
-    def __init__(self, html=None, error=None):
+    def __init__(self, html=None, error=None, files=None, course="Test Kurs"):
         self.html, self.error, self.calls, self.closed = html, error, 0, False
+        self.files, self.course = files or {}, course
 
     def fetch_news_html(self):
         self.calls += 1
         if self.error:
             raise self.error
         return self.html
+
+    def download_file(self, ref_id, **kw):
+        return self.files.get(ref_id, (b"Hier steht keine Frist.", "text/plain", "x.txt"))
+
+    def course_of(self, obj_type, ref_id):
+        return self.course
 
     def close(self):
         self.closed = True
@@ -138,18 +150,105 @@ def settings(tmp_path):
 NOW_UTC = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 
 
-def test_task_like_news_becomes_proposal_not_task(conn, settings):
-    n = Collect()
-    ilias_step(conn, settings, n, NOW_UTC, ilias_factory=lambda: FakeIlias(page(panel(1, "8. Okt 2026, 13:56", "A.pdf"))))
-    later = NOW_UTC + timedelta(hours=1)
+class ButtonChannel(Collect):
+    def __init__(self, ok=True):
+        super().__init__()
+        self.ok, self.buttons = ok, []
+
+    def send_with_buttons(self, text, buttons):
+        self.msgs.append(text)
+        self.buttons.append(buttons)
+        return self.ok
+
+
+def _first_then(conn, settings, channel, html):
+    ilias_step(conn, settings, Collect(), NOW_UTC, ilias_factory=lambda: FakeIlias(page(panel(1, "8. Okt 2026, 13:56", "A.pdf"))))
+    return ilias_step(conn, settings, channel, NOW_UTC + timedelta(hours=1), ilias_factory=lambda: FakeIlias(html))
+
+
+def test_assignment_is_announced_but_nothing_is_created(conn, settings):
+    ch = ButtonChannel()
     html = page(panel(1, "8. Okt 2026, 13:56", "A.pdf"), panel(2, "13. Okt 2026, 10:00", "Projektaufgabe.pdf"),
                 panel(3, "13. Okt 2026, 10:05", "Vorlesung 3 Folien.pdf"))
-    ilias_step(conn, settings, n, later, ilias_factory=lambda: FakeIlias(html))
-    pending = proposals.pending(conn)
-    assert [p["title"] for p in pending] == ["ILIAS: Projektaufgabe.pdf"] and pending[0]["kind"] == "task"
-    assert "goto.php/file/100" in pending[0]["note"]
-    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0   # nie direkt eine Aufgabe
-    assert conn.execute("SELECT COUNT(*) FROM ilias_news").fetchone()[0] == 3   # alles gespeichert
+    _first_then(conn, settings, ch, html)
+    assert len(ch.msgs) == 1 and "Projektaufgabe.pdf" in ch.msgs[0] and "goto.php/file/100" in ch.msgs[0]
+    assert ch.buttons[0] == [[("➕ Als Aufgabe anlegen", "ilt:2")]]
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0           # nur Information
+    assert proposals.pending(conn) == []                                          # keine Warteliste
+    assert conn.execute("SELECT COUNT(*) FROM ilias_news").fetchone()[0] == 3     # alles gespeichert
+    assert conn.execute("SELECT COUNT(*) FROM ilias_news WHERE state='new'").fetchone()[0] == 0
+
+
+def test_announced_only_once(conn, settings):
+    ch = ButtonChannel()
+    html = page(panel(1, "8. Okt 2026, 13:56", "A.pdf"), panel(2, "13. Okt 2026, 10:00", "Projektaufgabe.pdf"))
+    _first_then(conn, settings, ch, html)
+    ilias_step(conn, settings, ch, NOW_UTC + timedelta(hours=3), ilias_factory=lambda: FakeIlias(html))
+    assert len(ch.msgs) == 1
+
+
+def test_undelivered_announcement_is_retried(conn, settings):
+    down = ButtonChannel(ok=False)
+    html = page(panel(1, "8. Okt 2026, 13:56", "A.pdf"), panel(2, "13. Okt 2026, 10:00", "Projektaufgabe.pdf"))
+    _first_then(conn, settings, down, html)
+    up = ButtonChannel(ok=True)
+    ilias_step(conn, settings, up, NOW_UTC + timedelta(hours=3), ilias_factory=lambda: FakeIlias(html))
+    ilias_step(conn, settings, up, NOW_UTC + timedelta(hours=6), ilias_factory=lambda: FakeIlias(html))
+    assert len(down.msgs) == 1 and len(up.msgs) == 1   # beim zweiten Versuch zugestellt, danach Ruhe
+
+
+def test_works_with_plain_notifier_without_buttons(conn, settings):
+    plain = Collect()
+    html = page(panel(1, "8. Okt 2026, 13:56", "A.pdf"), panel(2, "13. Okt 2026, 10:00", "Hausaufgabe 4.pdf"))
+    _first_then(conn, settings, plain, html)
+    assert len(plain.msgs) == 1 and "Hausaufgabe 4.pdf" in plain.msgs[0]
+
+
+def test_news_are_processed_in_batches(conn, settings):
+    ch = ButtonChannel()
+    html = page(panel(1, "8. Okt 2026, 13:56", "A.pdf"),
+                *[panel(10 + i, "13. Okt 2026, 10:00", f"Aufgabe {i}.pdf", ref=str(200 + i)) for i in range(12)])
+    _first_then(conn, settings, ch, html)
+    assert len(ch.buttons) == 10                                   # pro Lauf höchstens 10 Einträge
+    assert conn.execute("SELECT COUNT(*) FROM ilias_news WHERE state='new'").fetchone()[0] == 2
+    ilias_step(conn, settings, ch, NOW_UTC + timedelta(hours=3), ilias_factory=lambda: FakeIlias(html))
+    assert len(ch.buttons) == 12 and conn.execute("SELECT COUNT(*) FROM ilias_news WHERE state='new'").fetchone()[0] == 0
+
+
+def test_irrelevant_news_is_silent(conn, settings):
+    ch = ButtonChannel()
+    html = page(panel(1, "8. Okt 2026, 13:56", "A.pdf"), panel(2, "13. Okt 2026, 10:00", "Klausuranmeldung.pdf"),
+                panel(3, "13. Okt 2026, 10:05", "Vorlesung 3 Folien.pdf"))
+    _first_then(conn, settings, ch, html)
+    assert ch.msgs == []
+
+
+def test_button_creates_task_only_on_click_and_only_once(conn, settings):
+    ch = ButtonChannel()
+    html = page(panel(1, "8. Okt 2026, 13:56", "A.pdf"), panel(2, "13. Okt 2026, 10:00", "Projektaufgabe.pdf"))
+    _first_then(conn, settings, ch, html)
+    r = handle_callback(conn, "ilt:2")
+    row = conn.execute("SELECT * FROM tasks").fetchone()
+    assert r.changed and row["title"] == "ILIAS: Projektaufgabe.pdf" and row["source"] == "ilias" and row["deadline"] is None
+    assert "/frist 1" in r.text
+    assert "schon eine Aufgabe" in handle_callback(conn, "ilt:2").text
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+    assert "gibt es nicht mehr" in handle_callback(conn, "ilt:999").text
+
+
+def test_frist_and_aufwand_commands(conn):
+    handle_message(conn, "Bericht", message_id=1, now=NOW)
+    assert "20.10." in handle_message(conn, "/frist 1 20.10.", now=NOW).text
+    assert conn.execute("SELECT deadline FROM tasks").fetchone()[0].endswith("-10-20")
+    assert "2 h" in handle_message(conn, "/aufwand 1 2h").text
+    assert conn.execute("SELECT estimate_min FROM tasks").fetchone()[0] == 120
+    assert "entfernt" in handle_message(conn, "/frist 1 keine").text
+    assert conn.execute("SELECT deadline FROM tasks").fetchone()[0] is None
+    assert "So geht" in handle_message(conn, "/frist").text
+    assert "nicht lesbar" in handle_message(conn, "/frist 1 irgendwann").text
+    assert "gibt es nicht" in handle_message(conn, "/aufwand 99 1h").text
+    log = conn.execute("SELECT actor, detail FROM changelog WHERE action='task.updated'").fetchall()
+    assert len(log) == 3 and all(r["actor"] == "user" for r in log)
 
 
 def test_ilias_polled_at_most_every_30_minutes(conn, settings):
@@ -254,3 +353,80 @@ def test_bot_ilias_command(conn):
     text = handle_message(conn, "/ilias").text
     assert "Plan.pdf" in text and "Muster" in text
     assert "Plan.pdf" in ilias_overview(conn, days=3)
+
+
+# -- Datei-Download ----------------------------------------------------------------------------------
+def download_client(tmp_path, handler):
+    return IliasClient("user", "pw", tmp_path / "s.json", client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True))
+
+
+def test_download_returns_content_and_decodes_filename(tmp_path):
+    def handler(request):
+        return httpx.Response(200, content=b"%PDF-1.4 hallo", headers={
+            "content-type": "application/pdf", "content-disposition": "attachment; filename*=UTF-8''%C3%9Cbung%203.pdf"})
+
+    data, ctype, name = download_client(tmp_path, handler).download_file("5")
+    assert data == b"%PDF-1.4 hallo" and ctype == "application/pdf" and name == "Übung 3.pdf"
+
+
+def test_accept_filter_gets_filename_first_as_documents_is_supported_expects(tmp_path):
+    """Regression: Die Argumente waren vertauscht → im Echtbetrieb wurde jede Datei übersprungen."""
+    from planner.connectors.ilias import SkippedFile
+    from planner.documents import is_supported
+
+    def pdf(request):
+        return httpx.Response(200, content=b"x", headers={"content-type": "application/pdf",
+                                                           "content-disposition": 'attachment; filename="a.pdf"'})
+
+    def video(request):
+        return httpx.Response(200, content=b"x", headers={"content-type": "video/mp4",
+                                                           "content-disposition": 'attachment; filename="film.mp4"'})
+
+    assert download_client(tmp_path, pdf).download_file("1", accept=is_supported)[0] == b"x"
+    with pytest.raises(SkippedFile):
+        download_client(tmp_path, video).download_file("1", accept=is_supported)
+
+
+def test_download_rejects_oversized(tmp_path):
+    def handler(request):
+        return httpx.Response(200, content=b"x" * 50, headers={"content-type": "application/pdf"})
+
+    with pytest.raises(ValueError, match="zu groß"):
+        download_client(tmp_path, handler).download_file("1", max_bytes=10)
+
+
+def test_html_page_instead_of_file_skips_only_that_file_without_auth_error(tmp_path):
+    """Keine Berechtigung/kein Dateiobjekt darf nie als Login-Fehler gelten (sperrt sonst die ganze Anbindung)."""
+    from planner.connectors.ilias import SkippedFile
+
+    def handler(request):
+        return httpx.Response(200, text="<html>Sie haben keine Berechtigung</html>", headers={"content-type": "text/html"})
+
+    with pytest.raises(SkippedFile):
+        download_client(tmp_path, handler).download_file("1")
+
+
+def test_download_logs_in_once_when_session_expired(tmp_path):
+    state = {"logged_in": False, "posts": 0}
+
+    def handler(request):
+        if request.method == "POST":
+            state["posts"] += 1
+            state["logged_in"] = True
+            return httpx.Response(200, text="<html>Dashboard</html>")
+        if "cmd=sendfile" in str(request.url):
+            if not state["logged_in"]:
+                return httpx.Response(200, text=LOGIN_PAGE, headers={"content-type": "text/html"})
+            return httpx.Response(200, content=b"daten", headers={"content-type": "application/pdf"})
+        return httpx.Response(200, text=LOGIN_PAGE)
+
+    data, _, _ = download_client(tmp_path, handler).download_file("1")
+    assert data == b"daten" and state["posts"] == 1
+
+
+def test_download_never_loops_on_login(tmp_path):
+    def handler(request):
+        return httpx.Response(200, text=LOGIN_PAGE, headers={"content-type": "text/html"})
+
+    with pytest.raises(IliasAuthError):
+        download_client(tmp_path, handler).download_file("1")

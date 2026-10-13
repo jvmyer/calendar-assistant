@@ -72,6 +72,9 @@ class TelegramNotifier:
             payload["reply_markup"] = markup
         return self._call("sendMessage", payload)
 
+    def send_with_buttons(self, text: str, buttons: Buttons) -> bool:
+        return self.send(text, buttons)
+
     def send_proposal(self, proposal_id: int, text: str) -> bool:
         return self.send(text, proposal_buttons(proposal_id))
 
