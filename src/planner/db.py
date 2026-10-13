@@ -157,6 +157,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+
 def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None

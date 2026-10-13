@@ -217,16 +217,27 @@ def test_same_news_reprocessed_does_not_duplicate(conn):
 
 
 # -- Ende-zu-Ende: ILIAS → Aufgabe → Kalender + Google Tasks ---------------------------------------------------------------------
-def test_end_to_end_into_calendar_and_google_tasks(conn):
+def test_end_to_end_into_calendar(conn):
     add_news(conn, "1", "Blatt 3.txt", ref="100")
     process_news(conn, Client({"100": txt("Abgabe bis spätestens 20.10. 19 Uhr")}), Channel(), NOW)
     cal, tc, out = FakeCal(), FakeTasks(), Channel()
     planning_step(conn, cal, tc, Rules(horizon_days=14), out, NOW)
-    google = tc.only()
-    assert google["title"].startswith("Abgabe: Blatt 3") and google["due"].startswith("2026-10-20")
-    assert "Eingeplant" in google["notes"]
     blocks = [e for e in cal.events["planner"].values() if e["summary"].startswith("Abgabe")]
     assert len(blocks) == 1 and datetime.fromisoformat(blocks[0]["end"]["dateTime"]) <= datetime(2026, 10, 20, 19, 0, tzinfo=TZ)
+    assert "Frist: 20.10.2026 19:00" in blocks[0]["description"]
+    assert not tc.items                                    # Zeitfenster gefunden → nur der Blocker, keine ganztägige Task
+
+
+def test_end_to_end_without_time_falls_back_to_google_task(conn):
+    add_news(conn, "1", "Blatt 3.txt", ref="100")
+    process_news(conn, Client({"100": txt("Abgabe bis spätestens 20.10. 19 Uhr")}), Channel(), NOW)
+    cal, tc = FakeCal(), FakeTasks()
+    for d in range(13, 21):                                # alles bis zur Frist belegt
+        cal.busy(datetime(2026, 10, d, 9, tzinfo=TZ), datetime(2026, 10, d, 19, tzinfo=TZ))
+    planning_step(conn, cal, tc, Rules(horizon_days=14), Channel(), NOW)
+    google = tc.only()
+    assert google["title"].startswith("Abgabe: Blatt 3") and google["due"].startswith("2026-10-20")
+    assert not cal.events["planner"]
 
 
 # -- Kurs ↔ Stundenplan -----------------------------------------------------------------------------------------------------------------

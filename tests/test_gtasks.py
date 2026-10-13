@@ -58,14 +58,20 @@ def cycle(conn, cal, tc, rules, notifier=None, now=NOW):
     return notifier
 
 
-def test_planned_task_has_google_task_with_block_info(env):
+def no_time(cal):
+    """Alles im Planungshorizont belegt → es gibt kein Zeitfenster, also nur die Task als Auffangnetz."""
+    for d in range(12, 20):
+        cal.busy(at(d, 9), at(d, 19))
+
+
+def test_task_with_time_slot_gets_only_the_block_no_all_day_task(env):
+    """Google Tasks kennen keine Uhrzeit (immer ganztägig) → mit Zeitfenster steht nur der Blocker im Kalender."""
     conn, cal, tc, rules = env
     tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60, deadline="2026-10-20")
     cycle(conn, cal, tc, rules)
-    t = tc.only()
-    assert t["title"] == "Bericht" and t["due"].startswith("2026-10-20")
-    assert "Eingeplant" in t["notes"] and "09:00" in t["notes"]
-    assert len(cal.events["planner"]) == 1   # Zeit war da → Blocker UND Task
+    assert not tc.items
+    [ev] = cal.events["planner"].values()
+    assert ev["summary"] == "Bericht" and ev["start"]["dateTime"].startswith("2026-10-12T09:00")
 
 
 def test_no_time_means_task_only_and_never_lost(env):
@@ -102,39 +108,49 @@ def test_task_without_deadline_or_slot_still_gets_a_date(env):
 
 def test_idempotent_no_duplicate_tasks(env):
     conn, cal, tc, rules = env
+    no_time(cal)
     tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     cycle(conn, cal, tc, rules)
     snapshot = {k: dict(v) for k, v in tc.items.items()}
+    assert len(snapshot) == 1
     for _ in range(3):
         cycle(conn, cal, tc, rules)
     assert tc.items == snapshot
 
 
-def test_block_move_updates_task_notes(env):
+def test_task_is_replaced_by_block_when_time_appears_and_back_when_it_vanishes(env):
     conn, cal, tc, rules = env
-    cal.busy(at(12, 9), at(12, 19))
-    cal.busy(at(13, 9), at(13, 19))
-    tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    no_time(cal)
+    tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     cycle(conn, cal, tc, rules)
-    assert "Fr 16.10." not in tc.only()["notes"] and "14.10." in tc.only()["notes"]
-    cal.busy(at(14, 9), at(14, 19))
+    assert tc.only()["title"] == "Bericht" and not cal.events["planner"]        # keine Zeit → nur Task
+
+    cal.events["main"].clear()                                                  # Termine fallen weg → Zeit ist da
     cycle(conn, cal, tc, rules)
-    assert "15.10." in tc.only()["notes"]
+    assert not tc.items and len(cal.events["planner"]) == 1                      # Blocker ersetzt die Task
+    assert conn.execute("SELECT COUNT(*) FROM gtasks WHERE task_id=?", (tid,)).fetchone()[0] == 0
+    assert conn.execute("SELECT action FROM changelog WHERE action='gtask.removed'").fetchone()
+
+    cal.events["planner"].clear()                                               # Nutzer löscht den Blocker …
+    no_time(cal)                                                                # … und es bleibt keine Zeit
+    cycle(conn, cal, tc, rules)
+    assert tc.only()["title"] == "Bericht"                                       # Auffangnetz greift wieder
 
 
 def test_user_checks_off_google_task(env):
     conn, cal, tc, rules = env
+    no_time(cal)
     tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     cycle(conn, cal, tc, rules)
     tc.only()["status"] = "completed"
     cycle(conn, cal, tc, rules)
     assert conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()[0] == "done"
-    assert not cal.events["planner"]   # Blocker verschwindet mit der erledigten Aufgabe
     assert conn.execute("SELECT action FROM changelog WHERE action='task.status'").fetchone() is not None
 
 
 def test_user_deletes_google_task(env):
     conn, cal, tc, rules = env
+    no_time(cal)
     tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     cycle(conn, cal, tc, rules)
     tc.items.clear()
@@ -148,6 +164,7 @@ def test_deleted_task_list_is_recreated_not_treated_as_dropped(env):
     from httplib2 import Response
 
     conn, cal, tc, rules = env
+    no_time(cal)
     tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     cycle(conn, cal, tc, rules)
 
@@ -174,21 +191,36 @@ def test_deleted_task_list_is_recreated_not_treated_as_dropped(env):
 
 def test_local_done_completes_remote_and_drop_deletes_it(env):
     conn, cal, tc, rules = env
+    no_time(cal)
     a = tasks.add_task(conn, title="A", source="manual", actor="user", estimate_min=30)
     b = tasks.add_task(conn, title="B", source="manual", actor="user", estimate_min=30)
     cycle(conn, cal, tc, rules)
+    assert len(tc.items) == 2
     tasks.set_status(conn, a, "done", actor="user")
     tasks.set_status(conn, b, "dropped", actor="user")
     cycle(conn, cal, tc, rules)
     assert [t["title"] for t in tc.items.values()] == ["A"] and tc.only()["status"] == "completed"
 
 
-def test_past_blocks_note(env):
+def test_elapsed_block_closes_the_task_without_leaving_an_all_day_task(env):
+    """Ohne Abhaken: nach dem Block ist die Aufgabe erledigt – es entsteht keine Task als „Rest“."""
     conn, cal, tc, rules = env
-    tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     cycle(conn, cal, tc, rules)
     cycle(conn, cal, tc, rules, now=datetime(2026, 10, 12, 15, 0, tzinfo=NOW.tzinfo))
-    assert "vorbei" in tc.only()["notes"]
+    assert conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()[0] == "done"
+    assert not tc.items
+
+
+def test_partly_planned_task_keeps_a_google_task_for_the_unplaced_rest(env):
+    conn, cal, tc, rules = env
+    cal.busy(at(12, 10), at(12, 19))                      # heute nur 09:00–09:50 frei, danach alles belegt
+    for d in range(13, 20):
+        cal.busy(at(d, 9), at(d, 19))
+    tasks.add_task(conn, title="Groß", source="manual", actor="user", estimate_min=120)
+    cycle(conn, cal, tc, rules)
+    cycle(conn, cal, tc, rules, now=datetime(2026, 10, 12, 15, 0, tzinfo=NOW.tzinfo))   # der kleine Block ist vorbei
+    assert tc.only()["title"] == "Groß" and "70 Min. ohne freien Slot" in tc.only()["notes"]   # Rest geht nicht unter
 
 
 def test_run_plan_alone_does_not_touch_tasks(env):

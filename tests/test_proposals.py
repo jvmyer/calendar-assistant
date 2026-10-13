@@ -81,14 +81,15 @@ def test_accepted_event_blocks_planning_time(env):
     assert datetime.fromisoformat(blocks[0]["start"]["dateTime"]) >= at(12, 11)   # nicht in den Termin hinein
 
 
-def test_accepted_task_becomes_real_task_with_google_task(env):
+def test_accepted_task_becomes_real_task_and_gets_a_block(env):
     conn, cal, tc, rules = env
     pid = proposals.add_proposal(conn, title="Anmeldung", kind="task", source="mail", actor="system",
                                  source_ref="m3", deadline="2026-10-23", estimate_min=10)
     task_id = proposals.accept(conn, pid, actor="user")
     assert task_id is not None
     cycle(conn, cal, tc, rules)
-    assert tc.only()["title"] == "Anmeldung"
+    assert [e["summary"] for e in planner_events(cal)] == ["Anmeldung"]      # Zeit war da → Blocker
+    assert not tc.items                                                         # und keine ganztägige Task daneben
 
 
 def test_rejected_never_materializes(env):

@@ -106,8 +106,8 @@ def planning_step(
 
     1. Änderungen des Nutzers in Google Tasks lesen (abgehakt / gelöscht – der Mensch gewinnt)
     2. bestätigte Termine in den Kalender eintragen
-    3. planen: Blocker setzen, wo Zeit ist
-    4. Google Tasks nachziehen: jede offene Aufgabe steht dort, auch wenn keine Zeit ist
+    3. planen: Blocker setzen, wo Zeit ist (verstrichene Aufgaben gelten als erledigt)
+    4. Google Tasks nachziehen: Aufgaben OHNE Zeitfenster stehen dort (Auffangnetz), mit Blocker nicht
     5. neue Vorschläge melden (nichts davon kommt ohne Bestätigung in den Kalender)
     """
     if tc is not None:

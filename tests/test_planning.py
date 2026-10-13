@@ -4,7 +4,7 @@ import pytest
 
 from planner import tasks
 from planner.db import connect
-from planner.planning import describe_plan, run_plan
+from planner.planning import close_elapsed, describe_plan, run_plan
 from planner.rules import TZ, Rules
 
 NOW = datetime(2026, 10, 12, 8, 0, tzinfo=TZ)   # Montag 08:00
@@ -30,17 +30,17 @@ class FakeCal:
     def list_events(self, cid, start, end):
         return list(self.events[cid].values())
 
-    def _put(self, eid, title, start, end):
-        self.events["planner"][eid] = {"id": eid, "summary": title,
+    def _put(self, eid, title, start, end, description=""):
+        self.events["planner"][eid] = {"id": eid, "summary": title, "description": description,
                                        "start": {"dateTime": start.isoformat()}, "end": {"dateTime": end.isoformat()}}
 
     def create_block(self, title, start, end, *, task_id, description=""):
         self.n += 1
-        self._put(f"e{self.n}", title, start, end)
+        self._put(f"e{self.n}", title, start, end, description)
         return {"id": f"e{self.n}"}
 
     def update_block(self, event_id, title, start, end, *, task_id, description=""):
-        self._put(event_id, title, start, end)
+        self._put(event_id, title, start, end, description)
 
     def delete_block(self, event_id):
         self.events["planner"].pop(event_id, None)
@@ -233,3 +233,60 @@ def test_short_gap_is_used_by_short_task_only(env):
     by_title = {e["summary"]: datetime.fromisoformat(e["start"]["dateTime"]) for e in cal.events["planner"].values()}
     assert by_title["Kurz"] == at(12, 10, 15)
     assert by_title["Lang"] >= at(15, 9)
+
+
+# -- Ohne Abhaken: verstrichene Aufgaben gelten als erledigt ----------------------------------------------------------
+def _status(conn, tid):
+    return conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()[0]
+
+
+def test_task_is_closed_once_its_planned_time_has_passed(env):
+    conn, cal, rules = env
+    tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    run_plan(conn, cal, rules, now=NOW)                                   # Block 09–10
+    run_plan(conn, cal, rules, now=at(12, 9, 30))
+    assert _status(conn, tid) == "open"                                   # läuft noch
+    run_plan(conn, cal, rules, now=at(12, 10, 5))
+    assert _status(conn, tid) == "done"
+    log = conn.execute("SELECT actor, reason FROM changelog WHERE action='task.status'").fetchone()
+    assert (log["actor"], log["reason"]) == ("planner", "Geplante Zeit verstrichen")
+    assert len(cal.events["planner"]) == 1                                # der Termin bleibt als Erinnerung stehen
+
+
+def test_multi_block_task_stays_open_until_the_last_block_is_over(env):
+    conn, cal, rules = env
+    tid = tasks.add_task(conn, title="Groß", source="manual", actor="user", estimate_min=240)   # Mo 180 + Di 60
+    run_plan(conn, cal, rules, now=NOW)
+    run_plan(conn, cal, rules, now=at(12, 20))                            # Montag vorbei, Dienstag steht noch an
+    assert _status(conn, tid) == "open"
+    run_plan(conn, cal, rules, now=at(13, 20))
+    assert _status(conn, tid) == "done"
+
+
+def test_unplaced_rest_keeps_the_task_open(env):
+    conn, cal, rules = env
+    cal.busy(at(12, 10), at(12, 19))
+    for d in range(13, 20):
+        cal.busy(at(d, 9), at(d, 19))
+    tid = tasks.add_task(conn, title="Groß", source="manual", actor="user", estimate_min=120)
+    run_plan(conn, cal, rules, now=NOW)                                   # nur 45 Min. Platz
+    run_plan(conn, cal, rules, now=at(12, 12))
+    assert _status(conn, tid) == "open"                                   # Rest fehlt noch → nicht still schließen
+
+
+def test_dry_run_and_unplanned_tasks_never_close(env):
+    conn, cal, rules = env
+    planned = tasks.add_task(conn, title="A", source="manual", actor="user", estimate_min=60)
+    run_plan(conn, cal, rules, now=NOW)
+    run_plan(conn, cal, rules, now=at(12, 12), dry_run=True)
+    assert _status(conn, planned) == "open"                               # Probelauf schreibt nichts
+    fresh = tasks.add_task(conn, title="B", source="manual", actor="user", estimate_min=30)
+    assert close_elapsed(conn, at(12, 12), 60) == ["A"] and _status(conn, fresh) == "open"   # ohne Blocker nie
+
+
+def test_default_estimate_is_used_for_tasks_without_one(env):
+    conn, cal, rules = env
+    tid = tasks.add_task(conn, title="Ohne Schätzung", source="manual", actor="user")
+    run_plan(conn, cal, rules, now=NOW)                                   # Standard 60 Min.
+    run_plan(conn, cal, rules, now=at(12, 12))
+    assert _status(conn, tid) == "done"

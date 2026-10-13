@@ -1,7 +1,9 @@
-"""Google Tasks: jede offene Aufgabe steht immer als Task im Kalender.
+"""Google Tasks: Auffangnetz für Aufgaben OHNE Zeitfenster – nichts darf untergehen.
 
-Regel: Gibt es Zeit, steht zusätzlich ein Blocker im Kalender „Planer“ (Notiz der Task nennt ihn).
-Gibt es keine Zeit, bleibt nur die Task – sichtbar am Fälligkeitstag, nie stillschweigend weg.
+Regel: Gibt es ein Zeitfenster, steht **nur der Blocker** (Event mit Uhrzeit, Titel „☐ …“) im Kalender –
+eine Google Task kann über die API kein Zeitfenster tragen (nur ein Datum, also immer ganztägig) und
+würde den Eintrag verdoppeln. Gibt es keine Zeit, bleibt die Task: sichtbar am Fälligkeitstag, nie
+stillschweigend weg.
 
 Der Mensch gewinnt: abgehakte Tasks werden im Planer als erledigt übernommen, gelöschte als verworfen.
 Titel, Notiz und Fälligkeit werden dagegen vom Planer vorgegeben (Deadline ändert man im Planer).
@@ -138,26 +140,20 @@ def _fmt(start_iso: str, end_iso: str) -> str:
     return f"{s:%a %d.%m. %H:%M}–{e:%H:%M}"
 
 
-def _notes(task_id: int, future: list[sqlite3.Row], has_past: bool, unplaced_min: int | None) -> str:
+def _notes(task_id: int, has_past: bool, unplaced_min: int | None) -> str:
     lines: list[str] = []
-    if future:
-        shown = [_fmt(b["start"], b["end"]) for b in future[:MAX_SHOWN_BLOCKS]]
-        more = len(future) - MAX_SHOWN_BLOCKS
-        lines.append("🗓 Eingeplant: " + ", ".join(shown) + (f" (+{more} weitere)" if more > 0 else ""))
     if unplaced_min:
         lines.append(f"⚠️ {unplaced_min} Min. ohne freien Slot – bitte selbst Zeit schaffen.")
-    elif not future:
+    else:
         lines.append("Geplante Zeit ist vorbei – bitte abhaken oder neu planen." if has_past
                      else "Noch nicht eingeplant.")
     lines.append(f"Aufgabe #{task_id} (Planer)")
     return "\n".join(lines)
 
 
-def _due_date(task: sqlite3.Row, future: list[sqlite3.Row], remote_due: str | None, now: datetime) -> str:
+def _due_date(task: sqlite3.Row, remote_due: str | None, now: datetime) -> str:
     if task["deadline"]:
         return deadline_to_dt(task["deadline"]).astimezone(TZ).date().isoformat()
-    if future:
-        return datetime.fromisoformat(future[0]["start"]).astimezone(TZ).date().isoformat()
     return remote_due[:10] if remote_due else now.astimezone(TZ).date().isoformat()   # nie ohne Datum
 
 
@@ -181,10 +177,21 @@ def push(
         future = future_by_task.get(tid, [])
         m = mapping.get(tid)
         remote_task = remote.get(m["gtask_id"]) if m and m["tasklist_id"] == list_id else None
+        if future:
+            # Ein Blocker mit Uhrzeit steht im Kalender → keine (ganztägige) Task daneben
+            if m is not None:
+                if remote_task is not None:
+                    tc.delete(list_id, remote_task["id"])
+                conn.execute("DELETE FROM gtasks WHERE task_id = ?", (tid,))
+                conn.commit()
+                changelog.log(conn, actor="planner", action="gtask.removed", entity="task", entity_id=tid,
+                              reason="Zeitfenster gefunden – der Blocker im Kalender ersetzt die Task")
+                report.removed += 1
+            continue
         desired = {
             "title": t["title"],
-            "notes": _notes(tid, future, tid in past_tasks, unplaced.get(tid)),
-            "due": _due_date(t, future, (remote_task or {}).get("due"), now),
+            "notes": _notes(tid, tid in past_tasks, unplaced.get(tid)),
+            "due": _due_date(t, (remote_task or {}).get("due"), now),
         }
         body = {**desired, "due": f"{desired['due']}T00:00:00.000Z"}
         if remote_task is None:

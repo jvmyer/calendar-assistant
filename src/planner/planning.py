@@ -21,7 +21,7 @@ from .db import get_meta, set_meta
 from .parsing import deadline_to_dt
 from .rules import TZ, Rules
 from .scheduler import Interval, Placement, TaskInput, free_windows, minutes, schedule
-from .tasks import open_tasks
+from .tasks import open_tasks, set_status
 
 MAX_LINES = 8
 
@@ -127,6 +127,24 @@ def _reconcile(conn: sqlite3.Connection, events: dict[str, dict], now: datetime,
             report.pinned += 1
 
 
+def close_elapsed(conn: sqlite3.Connection, now: datetime, default_estimate_min: int) -> list[str]:
+    """Ohne Abhaken im Kalender: ist die geplante Zeit einer Aufgabe komplett verstrichen und nichts mehr
+    offen (kein weiterer Blocker), gilt sie als erledigt. Aufgaben mit noch unverplantem Rest bleiben offen.
+    """
+    now_iso = _iso(now)
+    closed: list[str] = []
+    for t in conn.execute("SELECT * FROM tasks WHERE status = 'open'").fetchall():
+        if conn.execute("SELECT 1 FROM blocks WHERE task_id = ? AND state = 'active' AND end > ?",
+                        (t["id"], now_iso)).fetchone():
+            continue   # es steht noch ein Blocker an
+        worked = sum(minutes(_dt(b["start"]), _dt(b["end"])) for b in conn.execute(
+            "SELECT start, end FROM blocks WHERE task_id = ? AND state = 'active' AND end <= ?", (t["id"], now_iso)))
+        if worked and worked >= (t["estimate_min"] or default_estimate_min):
+            set_status(conn, t["id"], "done", actor="planner", reason="Geplante Zeit verstrichen")
+            closed.append(t["title"])
+    return closed
+
+
 def _overlaps(start: datetime, end: datetime, busy: list[Interval]) -> bool:
     return any(bs < end and be > start for bs, be in busy)
 
@@ -174,6 +192,8 @@ def run_plan(
     planner_id = cal.ensure_planner_calendar()
     planner_events = {e["id"]: e for e in cal.list_events(planner_id, now, horizon_end) if "id" in e}
     _reconcile(conn, planner_events, now, report)
+    if not dry_run:
+        close_elapsed(conn, now, rules.default_estimate_min)
     busy = _collect_busy(cal, planner_id, rules, now, horizon_end)
     # Alles im Planer-Kalender, was kein Blocker von uns ist (z. B. bestätigte Termine), zählt als belegt.
     own = {r["gcal_event_id"] for r in conn.execute("SELECT gcal_event_id FROM blocks")}
@@ -280,7 +300,7 @@ def run_plan(
                       reason=reasons.get(row["id"], "Umplanung"))
     for row, p in moved:
         cal.update_block(row["gcal_event_id"], title_of(p.task_id), p.start, p.end, task_id=p.task_id,
-                         description=_description(p.task_id))
+                         description=_description(conn, p.task_id))
         conn.execute("UPDATE blocks SET start = ?, end = ? WHERE id = ?", (_iso(p.start), _iso(p.end), row["id"]))
         conn.commit()
         changelog.log(conn, actor="planner", action="block.moved", entity="block", entity_id=row["id"],
@@ -288,7 +308,7 @@ def run_plan(
                       reason="Neu geplant (Änderung im Kalender oder neue Aufgabe)")
     for p in created:
         ev = cal.create_block(title_of(p.task_id), p.start, p.end, task_id=p.task_id,
-                              description=_description(p.task_id))
+                              description=_description(conn, p.task_id))
         cur = conn.execute(
             "INSERT INTO blocks(task_id, start, end, gcal_event_id, calendar_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -301,8 +321,14 @@ def run_plan(
     return report
 
 
-def _description(task_id: int) -> str:
-    return f"Automatisch geplant (Aufgabe #{task_id}). Verschieben im Kalender pinnt den Blocker."
+def _description(conn: sqlite3.Connection, task_id: int) -> str:
+    row = conn.execute("SELECT deadline FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    lines = [f"Automatisch geplant (Aufgabe #{task_id})."]
+    if row and row["deadline"]:
+        dl = deadline_to_dt(row["deadline"]).astimezone(TZ)
+        lines.append("Frist: " + (dl.strftime("%d.%m.%Y") if len(row["deadline"]) == 10 else dl.strftime("%d.%m.%Y %H:%M")))
+    lines.append("Verschieben im Kalender pinnt den Blocker (der Planer fasst ihn dann nicht mehr an).")
+    return "\n".join(lines)
 
 
 def describe_plan(report: PlanReport) -> str | None:
