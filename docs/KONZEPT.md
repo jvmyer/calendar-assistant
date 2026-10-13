@@ -131,7 +131,7 @@ Konfigurierbar, z. B.: Arbeitszeitfenster, Ruhezeiten, max. Stunden pro Bereich 
 
 | Gerät | RAM | Rolle |
 |---|---|---|
-| Laptop (freies Gerät, Linux) | 16 GB | **Hauptsystem**, läuft 24/7 zu Hause: Connectors, Planer, Bot, Whisper (small/medium), lokales LLM (7–8B, 4-Bit-quantisiert, ca. 5–6 GB RAM). |
+| Laptop Acer (i7-7500U, 2 Kerne/4 Threads, AVX2), Ubuntu Server 24.04 | **8 GB** | **Hauptsystem**, läuft 24/7 zu Hause: Connectors, Planer, Bot, Whisper (small). Wegen 8 GB nur ein **kleines** lokales LLM (3–4B, 4-Bit) fürs Mail-Lesen (stündlich, langsam ist ok). Installiert am 2026-10-13, Stand und Acer-Besonderheiten in `deploy/README.md`. |
 | Raspberry Pi 5 | 4 GB | Nicht im Kern. Optional: Backup-Ziel oder Monitoring. |
 | Gemieteter Server | ~3 GB | Nicht im Kern. Optional: verschlüsselte Offsite-Backups. |
 
