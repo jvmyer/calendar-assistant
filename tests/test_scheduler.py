@@ -100,3 +100,41 @@ def test_near_equal_scores_prefer_earlier_deadline():
     assert not res.unplaced
     first = min(res.placements, key=lambda p: p.start)
     assert first.task_id == 2   # knappe Aufgabe bekommt den frühesten Slot
+
+
+def test_short_gaps_kept_but_only_short_tasks_use_them():
+    rules = Rules(horizon_days=1)
+    # Lücke 10:00–10:45 → minus je 10 Min. Puffer = 10:10–10:35 → aufs Raster: 10:15–10:35 (20 Min.)
+    busy = [(at(12, 9), at(12, 10)), (at(12, 10, 45), at(12, 19)), (at(13, 9), at(13, 19))]
+    free = free_windows(MON_8, rules, busy)
+    assert free == [(at(12, 10, 15), at(12, 10, 35))]
+    res = schedule([TaskInput(1, "Kurz", 10), TaskInput(2, "Lang", 120)], free, rules, MON_8)
+    assert [(p.task_id, p.start) for p in res.placements] == [(1, at(12, 10, 15))]
+    assert res.unplaced == {2: 120}
+
+
+def _thursday_windows():
+    return [(at(15, 13, 15), at(15, 13, 50)), (at(15, 17, 30), at(15, 19)), (at(16, 13, 15), at(16, 19))]
+
+
+def test_high_score_big_task_cannot_starve_reachable_tight_deadline():
+    """Fall aus dem Dry-Run: Thesis (hoher Score) darf die Donnerstag-Fenster nicht leerräumen,
+    wenn eine 5-Minuten-Aufgabe bis Donnerstagabend noch erreichbar ist."""
+    rules = Rules(horizon_days=14)
+    thesis = TaskInput(1, "Thesis", 240, deadline=at(30, 23, 59), weight=2.0)
+    classroom = TaskInput(2, "Classroom", 5, deadline=at(15, 23, 59))
+    res = schedule([thesis, classroom], _thursday_windows(), rules, MON_8)
+    assert not res.unplaced
+    placed = {p.task_id: p for p in res.placements if p.task_id == 2}
+    assert placed[2].end <= at(15, 23, 59)
+    assert sum(int((p.end - p.start).total_seconds() // 60) for p in res.placements if p.task_id == 1) == 240
+
+
+def test_unreachable_deadline_does_not_block_other_tasks():
+    rules = Rules(horizon_days=14)
+    hopeless = TaskInput(1, "Unmöglich", 10, deadline=at(13, 9))        # vor dem ersten freien Fenster
+    big = TaskInput(2, "Groß", 90, weight=2.0)
+    res = schedule([big, hopeless], _thursday_windows(), rules, MON_8)
+    assert res.unplaced == {1: 10}
+    assert sum(int((p.end - p.start).total_seconds() // 60) for p in res.placements if p.task_id == 2) == 90
+    assert min(p.start for p in res.placements) == at(15, 13, 15)   # Groß nutzt das erste Fenster ohne Zurückhalten

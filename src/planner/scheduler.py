@@ -112,10 +112,12 @@ def free_windows(
     pad = timedelta(minutes=rules.buffer_min)
     free = subtract(windows, [(s - pad, e + pad) for s, e in busy])
     free = subtract(free, fixed or [])
+    # Auch kurze Lücken behalten: eine 10-Minuten-Aufgabe passt in 15 Min. zwischen zwei Terminen.
+    # Dass große Aufgaben sie nicht nutzen, regelt `schedule` über die Mindestblockgröße je Aufgabe.
     out: list[Interval] = []
     for s, e in free:
         s = ceil_to(s, rules.granularity_min)
-        if minutes(s, e) >= rules.min_block_min:
+        if minutes(s, e) >= rules.granularity_min:
             out.append((s, e))
     return out
 
@@ -142,6 +144,33 @@ def score(task: TaskInput, free: list[Interval], now: datetime) -> float:
     return task.weight * urgency(task, free, now) * task.boost
 
 
+def _capacity_before(windows: list[list[datetime]], deadline: datetime) -> int:
+    """Freie Minuten (aktueller Stand der Fenster) bis zur Deadline."""
+    return sum(max(0, minutes(w[0], min(w[1], deadline))) for w in windows if w[0] < deadline)
+
+
+def _allowed_length(
+    windows: list[list[datetime]], start: datetime, pending: list[TaskInput], now: datetime
+) -> int | None:
+    """Wie lang darf ein Blocker ab `start` höchstens sein, ohne noch wartenden Aufgaben mit früherer
+    Deadline die nötige Zeit wegzunehmen? None = keine Einschränkung.
+
+    Nur Deadlines, die überhaupt noch erreichbar sind, werden geschützt: ist die Zeit bis dahin ohnehin
+    zu knapp, bringt Zurückhalten nichts.
+    """
+    limit: int | None = None
+    deadlines = sorted({t.deadline for t in pending if t.deadline is not None and t.deadline > now})
+    for d in deadlines:
+        demand = sum(t.remaining_min for t in pending if t.deadline is not None and now < t.deadline <= d)
+        slack = _capacity_before(windows, d) - demand
+        if slack < 0:
+            continue   # nicht mehr zu retten
+        before_d = max(0, minutes(start, d))
+        if slack < before_d:
+            limit = slack if limit is None else min(limit, slack)
+    return limit
+
+
 def schedule(tasks: list[TaskInput], free: list[Interval], rules: Rules, now: datetime) -> ScheduleResult:
     result = ScheduleResult()
     scores = {t.id: score(t, free, now) for t in tasks}
@@ -154,10 +183,11 @@ def schedule(tasks: list[TaskInput], free: list[Interval], rules: Rules, now: da
         key=lambda t: (-math.floor(scores[t.id] * 4), t.deadline or _FAR_FUTURE, -scores[t.id], t.id),
     )
 
-    for task in ordered:
+    for idx, task in enumerate(ordered):
         need = task.remaining_min
         if need <= 0:
             continue
+        pending = [t for t in ordered[idx + 1:] if t.remaining_min > 0]
         limit = task.deadline
         if limit is not None and limit <= now:
             result.overdue.add(task.id)   # überfällig: so früh wie möglich, ohne Obergrenze
@@ -172,6 +202,11 @@ def schedule(tasks: list[TaskInput], free: list[Interval], rules: Rules, now: da
             day = w[0].astimezone(TZ).date()
             room = rules.max_task_per_day_min - per_day[(task.id, day)]
             chunk = min(need, length, room)
+            allowed = _allowed_length(windows, w[0], pending, now)
+            if allowed is not None:
+                step = rules.granularity_min
+                if -(-chunk // step) * step > allowed:   # inkl. Aufrunden aufs Raster, das Zeit kostet
+                    chunk = min(chunk, (allowed // step) * step)
             if chunk <= 0 or chunk < min(rules.min_block_min, need):
                 continue
             leftover = need - chunk

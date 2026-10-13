@@ -76,7 +76,9 @@ def _event_interval(ev: dict) -> Interval | None:
 
 def _skip_calendar(cal: dict, planner_id: str, rules: Rules) -> bool:
     cid = cal.get("id", "")
-    if cid == planner_id or "#holiday@" in cid or cid.endswith("@import.calendar.google.com"):
+    # Feiertage/Geburtstage sind keine Termine. Abonnierte ICS-Kalender (@import…) dagegen schon
+    # (z. B. Uni-Kalender) und zählen als belegt.
+    if cid == planner_id or "#holiday@" in cid or "#contacts@" in cid:
         return True
     ignored = {n.lower() for n in rules.ignore_calendars}
     return (cal.get("summaryOverride") or cal.get("summary") or "").lower() in ignored

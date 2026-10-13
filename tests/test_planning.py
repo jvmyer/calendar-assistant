@@ -209,3 +209,27 @@ def test_describe_plan(env):
     msg = describe_plan(run_plan(conn, cal, rules, now=NOW))
     assert msg and "➕" in msg and "Bericht" in msg
     assert describe_plan(run_plan(conn, cal, rules, now=NOW)) is None
+
+
+def test_subscribed_ics_calendar_counts_as_busy(env):
+    conn, cal, rules = env
+    cal.calendars.append({"id": "abc@import.calendar.google.com", "summary": "Uni-Abo"})
+    cal.events["abc@import.calendar.google.com"] = {}
+    cal.busy(at(12, 9), at(12, 11), cid="abc@import.calendar.google.com")
+    tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    run_plan(conn, cal, rules, now=NOW)
+    assert starts(cal) == [at(12, 11, 15)]   # nicht in den abonnierten Termin hinein
+
+
+def test_short_gap_is_used_by_short_task_only(env):
+    conn, cal, rules = env
+    cal.busy(at(12, 9), at(12, 10))
+    cal.busy(at(12, 10, 45), at(12, 19))   # Lücke 10:15–10:35 nach Puffer und Raster = 20 Min.
+    cal.busy(at(13, 9), at(13, 19))
+    cal.busy(at(14, 9), at(14, 19))
+    tasks.add_task(conn, title="Kurz", source="manual", actor="user", estimate_min=10)
+    tasks.add_task(conn, title="Lang", source="manual", actor="user", estimate_min=120)
+    run_plan(conn, cal, rules, now=NOW)
+    by_title = {e["summary"]: datetime.fromisoformat(e["start"]["dateTime"]) for e in cal.events["planner"].values()}
+    assert by_title["Kurz"] == at(12, 10, 15)
+    assert by_title["Lang"] >= at(15, 9)
