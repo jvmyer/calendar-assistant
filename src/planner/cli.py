@@ -168,6 +168,75 @@ def cmd_ilias_login(_args) -> int:
     return 0
 
 
+def cmd_mail_login(_args) -> int:
+    """Expliziter OWA-Login (genau ein Versuch); hebt die Sperre auf. Zeigt nur die Anzahl der Mails."""
+    from .connectors.owa import OwaAuthError, OwaClient
+
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    client = OwaClient(settings.hka_user, settings.hka_password, settings.owa_cert_path, settings.owa_key_path,
+                       settings.owa_session_path)
+    try:
+        n = len(client.list_inbox(limit=5))
+    except OwaAuthError as exc:
+        print(f"Mail-Login fehlgeschlagen: {exc}\nKein weiterer Versuch – bitte Zugangsdaten/Zertifikat prüfen.")
+        return 1
+    finally:
+        client.close()
+    set_meta(conn, "mail_blocked", "0")
+    print(f"Mail-Login ok ({n} Mails im Posteingang gelesen). Der Dienst darf HKA-Mail wieder abrufen.")
+    return 0
+
+
+def cmd_mail_sync(_args) -> int:
+    """Einmal abrufen und auswerten (erster Lauf = stiller Erstimport). Zeigt keine Inhalte."""
+    from .service import LogNotifier, mail_step
+
+    settings = load_settings()
+    conn = connect(settings.db_path)
+    n = mail_step(conn, settings, LogNotifier(), datetime.now(UTC), force=True)
+    if n is None:
+        print("Nicht abgerufen (MAIL_ENABLED fehlt, gesperrt oder Fehler – siehe `planner log`).")
+        return 1
+    counts = dict(conn.execute("SELECT state, COUNT(*) FROM mails GROUP BY state").fetchall())
+    verdicts = dict(conn.execute("SELECT verdict, COUNT(*) FROM mails WHERE verdict IS NOT NULL GROUP BY verdict"))
+    print(f"{n} Mails ausgewertet · gespeichert: {counts} · Urteile: {verdicts}")
+    return 0
+
+
+def cmd_mail_review(args) -> int:
+    """Probelauf: die letzten N Mails vom lokalen Modell bewerten lassen, Ergebnis NUR per Telegram.
+
+    Trägt nichts ein. Im Terminal erscheinen nur Zahlen (keine Betreffs/Inhalte).
+    """
+    from .connectors.owa import OwaAuthError, OwaClient
+    from .llm import OllamaClient
+    from .mail_flow import format_review, review
+    from .rules import TZ
+
+    settings = load_settings()
+    if not settings.telegram_enabled:
+        print("Telegram ist nicht eingerichtet – das Ergebnis würde nirgends ankommen.")
+        return 1
+    client = OwaClient(settings.hka_user, settings.hka_password, settings.owa_cert_path, settings.owa_key_path,
+                       settings.owa_session_path)
+    llm = OllamaClient(settings.ollama_url, settings.ollama_model)
+    try:
+        headers = client.list_inbox(limit=args.n)
+        print(f"{len(headers)} Mails geladen, das Modell liest jetzt (ca. 30 s pro Mail) …", flush=True)
+        todo, maybe, nothing, failed = review(client, llm, headers, datetime.now(TZ))
+    except OwaAuthError as exc:
+        print(f"Mail-Login fehlgeschlagen: {exc}")
+        return 1
+    finally:
+        client.close()
+        llm.close()
+    ok = make_notifier(settings).send(format_review(todo, maybe, nothing, failed, len(headers)))
+    print(f"{len(todo)} Aufgaben, {len(maybe)} Vorschläge, {nothing} ohne To-do, {failed} Fehler – "
+          + ("Liste per Telegram geschickt." if ok else "Telegram-Versand fehlgeschlagen."))
+    return 0 if ok else 1
+
+
 def cmd_ilias_sync(_args) -> int:
     """Einmal abrufen und anzeigen, was neu ist (erster Lauf = stiller Erstimport)."""
     from .service import LogNotifier, ilias_step
@@ -456,6 +525,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("ilias-login", help="ILIAS-Login prüfen (1 Versuch) und Sperre aufheben").set_defaults(
         fn=cmd_ilias_login)
     sub.add_parser("ilias-sync", help="ILIAS-Neuigkeiten jetzt abrufen").set_defaults(fn=cmd_ilias_sync)
+    sub.add_parser("mail-login", help="HKA-Mail-Login prüfen (1 Versuch) und Sperre aufheben").set_defaults(
+        fn=cmd_mail_login)
+    sub.add_parser("mail-sync", help="HKA-Mails jetzt abrufen und auswerten").set_defaults(fn=cmd_mail_sync)
+    p_rev = sub.add_parser("mail-review", help="Probelauf: letzte Mails bewerten, Liste per Telegram (trägt nichts ein)")
+    p_rev.add_argument("-n", type=int, default=10)
+    p_rev.set_defaults(fn=cmd_mail_review)
     p_news = sub.add_parser("ilias-news", help="Gespeicherte ILIAS-Neuigkeiten anzeigen")
     p_news.add_argument("--days", type=int, default=14)
     p_news.add_argument("-n", type=int, default=20)

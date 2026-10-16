@@ -62,7 +62,9 @@ _BIS = re.compile(r"\b(?:bis|by|until|before)\s+(?:spätestens\s+|zum\s+|zu\s+|a
 _SESSION = r"(?:Stunde|Vorlesung|Übung|Sitzung|Session|Lehrveranstaltung|Veranstaltung|Termin|Mal|Unterricht|Unterrichtsstunde|Seminar|Tutorium|Praktikum|Lecture|Class|Lesson|Meeting|Exercise)"
 _REL_SESSION = re.compile(rf"\b(?:bis|by|until|before)\s+(?:spätestens\s+)?(?:(?:zur|zum|zu der|zu dem|the)\s+)?(?:nächsten?|next)\s+{_SESSION}\b", re.IGNORECASE)
 _REL_DAY = re.compile(r"\bbis\s+(?:spätestens\s+)?(?P<w>heute|morgen|übermorgen)\b", re.IGNORECASE)
-_REL_WEEKDAY = re.compile(rf"\bbis\s+(?:spätestens\s+)?(?:(?:zum|am|nächsten|kommenden)\s+)*(?P<w>{_WD})\b", re.IGNORECASE)
+_REL_WEEKDAY = re.compile(   # auch „bis Sonntagabend“, „bis Mittwochmittag“
+    rf"\bbis\s+(?:spätestens\s+)?(?:(?:zum|am|nächsten|kommenden)\s+)*(?P<w>{_WD})"
+    r"(?:abend|mittag|nachmittag|vormittag|morgen|früh)?\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -224,3 +226,17 @@ def find_deadlines(text: str, *, posted: datetime, now: datetime) -> list[Deadli
 
     ordered = sorted(found.values(), key=lambda d: (d.when is None, d.when or posted))
     return ordered[:MAX_RESULTS]
+
+
+def resolve_phrase(phrase: str, *, posted: datetime, now: datetime) -> Deadline | None:
+    """Frist aus einer kurzen Textstelle („bis Sonntagabend“, „vom 02.11. bis 13.11.2026“).
+
+    Die Stelle stammt aus einem Text, der schon als Aufgabe erkannt wurde (z. B. vom Modell aus
+    einer Mail kopiert); der Aufgaben-Zusammenhang wird deshalb vorangestellt. Bei Zeiträumen gilt
+    das Ende. Vergangenes und Unauflösbares → None.
+    """
+    if not phrase.strip():
+        return None
+    found = [d for d in find_deadlines(f"Abgabe bitte {phrase}", posted=posted, now=now)
+             if d.when is not None and not d.past]
+    return max(found, key=lambda d: d.when) if found else None

@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS ilias_news (
     attempts   INTEGER NOT NULL DEFAULT 0    -- fehlgeschlagene Verarbeitungsversuche
 );
 
+-- HKA-Mails: nur Kopfdaten (Inhalte werden nie gespeichert); Erstimport gilt als „seen“
+CREATE TABLE IF NOT EXISTS mails (
+    item_id    TEXT PRIMARY KEY,         -- OWA-ItemId
+    received   TEXT NOT NULL,            -- ISO 8601
+    sender     TEXT,
+    subject    TEXT,
+    first_seen TEXT NOT NULL,
+    state      TEXT NOT NULL DEFAULT 'new',  -- new | seen
+    verdict    TEXT,                     -- aufgabe | vorschlag | nichts (Urteil des lokalen Modells)
+    attempts   INTEGER NOT NULL DEFAULT 0
+);
+
 -- Vorschläge („nice to know“): nichts davon landet ohne Bestätigung im Kalender
 CREATE TABLE IF NOT EXISTS proposals (
     id            INTEGER PRIMARY KEY,

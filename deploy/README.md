@@ -12,7 +12,7 @@ Dateien hier: `setup-server.sh` (läuft auf dem Laptop), `push.sh` (läuft auf d
 **Erledigt:**
 - Ubuntu Server 24.04.5 LTS ist auf dem Acer installiert und startet von allein (Abschnitte 1–2).
 - Anmeldung am Acer funktioniert: Benutzer **`<user>`**, Servername **`<server>`**.
-- LAN-Kabel verbunden, Adresse per DHCP: zuletzt **`<server-ip>`** (kann sich ändern, siehe Abschnitt 3).
+- LAN-Kabel verbunden, feste Adresse **`<server-ip>`** (im Router reserviert, Router-Oberfläche → statisches DHCP).
 
 **Als Nächstes (in dieser Reihenfolge):**
 1. Abschnitt 3: feste IP im Router vergeben.
@@ -83,7 +83,7 @@ Nach „Reboot now“ den USB-Stick abziehen.
 ## 3. Router: feste Adresse
 
 Im Router (Fritzbox o. Ä.) dem Laptop eine **feste IP** geben (DHCP-Reservierung, „Diesem Gerät immer die
-gleiche IP-Adresse zuweisen“). Bei der Installation war es `<server-ip>`.
+gleiche IP-Adresse zuweisen“). Erledigt: `<server>` hat fest `<server-ip>`.
 
 ## 4. SSH vom Mac einrichten
 
@@ -170,3 +170,11 @@ dann `sudo tlp start`. Ob es geht, zeigt `sudo tlp-stat -b`. Geht es nicht, ist 
   ```
 - Regelmäßige Sicherung der Datenbank (`/opt/calendar-assistant/data/planner.db`) auf den Pi oder einen
   gemieteten Server.
+
+## Nach der Einrichtung (Stand 2026-10-16)
+
+- Ollama + `qwen3:4b` installiert (nur lokal erreichbar, Port 11434 auf 127.0.0.1).
+- Kurzbefehle im Home von `<user>`: `./planner.sh <kommando>` (Planer als Dienst-Benutzer, z. B. `mail-login`,
+  `mail-review`), `./enable-mail.sh` (Mail-Abruf einschalten).
+- Härtung: `scp deploy/harden.sh <user>@<server-ip>:~ && ssh -t <user>@<server-ip> 'sudo bash harden.sh'`
+  (SSH nur mit Schlüssel, kein root, nur `<user>`; Dienst mit UMask 0077). Vorher muss der Schlüssel-Login gehen.

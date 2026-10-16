@@ -21,6 +21,9 @@ class Settings:
     hka_password: str = ""
     telegram_bot_token: str = ""
     telegram_user_id: int | None = None   # nur dieser Nutzer darf den Bot bedienen
+    mail_enabled: bool = False            # HKA-Mail abrufen (MAIL_ENABLED=1)
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "qwen3:4b"
 
     @property
     def telegram_enabled(self) -> bool:
@@ -33,6 +36,18 @@ class Settings:
     @property
     def ilias_session_path(self) -> Path:
         return self.data_dir / "ilias_session.json"
+
+    @property
+    def owa_session_path(self) -> Path:
+        return self.data_dir / "owa_session.json"
+
+    @property
+    def owa_cert_path(self) -> Path:
+        return self.data_dir / "secrets" / "hka_chain.pem"   # Leaf + Zwischenzertifikat (nur Leaf scheitert)
+
+    @property
+    def owa_key_path(self) -> Path:
+        return self.data_dir / "secrets" / "hka_key.pem"
 
     @property
     def rules_path(self) -> Path:
@@ -63,4 +78,7 @@ def load_settings() -> Settings:
         hka_password=os.environ.get("HKA_PASSWORD", ""),
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_user_id=_int_or_none(os.environ.get("TELEGRAM_USER_ID")),
+        mail_enabled=os.environ.get("MAIL_ENABLED", "").strip() == "1",
+        ollama_url=os.environ.get("OLLAMA_URL", "").strip() or "http://127.0.0.1:11434",
+        ollama_model=os.environ.get("OLLAMA_MODEL", "").strip() or "qwen3:4b",
     )

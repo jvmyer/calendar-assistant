@@ -29,6 +29,7 @@ from .db import get_meta, set_meta
 from .google_auth import ReauthNeeded, get_credentials
 from .gtasks import TasksClient
 from .ilias_flow import process_news
+from .mail_flow import process_mails
 from .mirror import mirror_source
 from .planning import describe_plan, run_plan
 from .rules import Rules, load_rules
@@ -178,6 +179,57 @@ def ilias_step(
     return None
 
 
+MAIL_MIN_INTERVAL = timedelta(minutes=60)
+
+
+def mail_step(
+    conn: sqlite3.Connection, settings: Settings, notifier: Notifier, now: datetime, *,
+    owa_factory=None, llm_factory=None, force: bool = False,
+) -> int | None:
+    """HKA-Mails abrufen und vom lokalen Modell lesen lassen (stündlich; nur mit MAIL_ENABLED=1).
+
+    Login-Schutz wie bei ILIAS: höchstens ein Versuch, nach Fehlschlag gesperrt bis `planner mail-login`.
+    Rückgabe: Anzahl verarbeiteter Mails (None = nicht gelaufen).
+    """
+    if owa_factory is None and not (settings.mail_enabled and settings.hka_user and settings.hka_password):
+        return None
+    if get_meta(conn, "mail_blocked") == "1":
+        return None
+    last = get_meta(conn, "mail_last_sync")
+    if not force and last and now - datetime.fromisoformat(last) < MAIL_MIN_INTERVAL:
+        return None
+    from .connectors.owa import OwaAuthError, OwaClient, sync_inbox
+    from .llm import OllamaClient
+
+    try:   # Zertifikat fehlt/defekt o. Ä.: darf den Dienst nicht stoppen
+        client = owa_factory() if owa_factory else OwaClient(
+            settings.hka_user, settings.hka_password, settings.owa_cert_path, settings.owa_key_path,
+            settings.owa_session_path)
+    except Exception as exc:
+        log.exception("Mail-Client nicht startbar")
+        changelog.log(conn, actor="system", action="sync.error", entity="source", entity_id="mail",
+                      detail={"error": f"{type(exc).__name__}: {exc}"[:300]})
+        return None
+    llm = llm_factory() if llm_factory else OllamaClient(settings.ollama_url, settings.ollama_model)
+    try:
+        sync_inbox(conn, client.list_inbox(), now=now)
+        set_meta(conn, "mail_last_sync", now.isoformat())
+        return process_mails(conn, client, llm, notifier, now)
+    except OwaAuthError as exc:
+        set_meta(conn, "mail_blocked", "1")
+        changelog.log(conn, actor="system", action="auth.expired", entity="mail", detail={"reason": str(exc)[:200]})
+        notifier.send("🔑 HKA-Mail-Login fehlgeschlagen – ich versuche es nicht automatisch erneut (Kontosperre). "
+                      "Bitte Zugangsdaten/Zertifikat prüfen und `planner mail-login` ausführen.")
+    except Exception as exc:
+        log.exception("Mail-Abruf fehlgeschlagen")
+        changelog.log(conn, actor="system", action="sync.error", entity="source", entity_id="mail",
+                      detail={"error": f"{type(exc).__name__}: {exc}"[:300]})
+    finally:
+        client.close()
+        llm.close()
+    return None
+
+
 def _plan_step(conn: sqlite3.Connection, cal, tc, settings: Settings, notifier: Notifier, now: datetime) -> None:
     """Nur laufen lassen, wenn es etwas zu tun gibt (Aufgaben oder Vorschläge vorhanden)."""
     has_work = conn.execute(
@@ -215,6 +267,9 @@ def sync_cycle(
 
     # 1b) ILIAS-Neuigkeiten (erzeugt höchstens Vorschläge)
     ilias_step(conn, settings, notifier, now, ilias_factory=ilias_factory)
+
+    # 1c) HKA-Mail (lokales Modell; Aufgaben automatisch, Vorschläge nur nach Bestätigung)
+    mail_step(conn, settings, notifier, now)
 
     # 2) Nach Google spiegeln (nur Differenz)
     try:
