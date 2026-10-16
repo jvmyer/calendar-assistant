@@ -9,6 +9,7 @@ Frist-Stelle wörtlich (`deadline_text`), das Datum bestimmt `deadlines.resolve_
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -17,6 +18,9 @@ import httpx
 KINDS = ("aufgabe", "vorschlag", "nichts")
 PRIOS = ("hoch", "mittel", "niedrig")
 MAX_BODY = 3000   # Zeichen; längere Mails werden gekürzt (Kontext des kleinen Modells)
+# Auf dem Acer erkennt Ollama den Grafikchip im Prozessor als „GPU“; damit ist es 4× langsamer als nur auf
+# der CPU (gemessen 2026-10-16: 165 s statt 41 s für eine lange Mail). Deshalb fest: keine GPU.
+OPTIONS = {"temperature": 0, "num_ctx": 4096, "num_gpu": 0}
 WEEKDAYS_DE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
 SYSTEM = """Du liest E-Mails eines Studenten (Jonah) und entscheidest, ob daraus etwas für seinen Kalender folgt.
@@ -59,6 +63,12 @@ class MailVerdict:
     priority: str = "mittel"   # hoch | mittel | niedrig
 
 
+def strip_quotes(body: str) -> str:
+    """Zitierte Zeilen („> …“) weg, Leerzeilen-Blöcke zusammenziehen – spart Rechenzeit."""
+    lines = [ln.rstrip() for ln in body.replace("\r", "").split("\n") if not ln.lstrip().startswith(">")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def today_text(d: date) -> str:
     return f"{WEEKDAYS_DE[d.weekday()]}, {d:%d.%m.%Y}"
 
@@ -94,11 +104,11 @@ class OllamaClient:
         """`examples`: frühere Mails mit der Einschätzung des Nutzers (`feedback.example_messages`)."""
         payload = {
             "model": self._model, "stream": False, "think": False, "format": SCHEMA,
-            "options": {"temperature": 0, "num_ctx": 4096},
+            "options": OPTIONS,
             "messages": [
                 {"role": "system", "content": SYSTEM.format(today=today_text(today))},
                 *(examples or []),
-                {"role": "user", "content": f"Von: {sender}\nBetreff: {subject}\n\n{body[:MAX_BODY]}"},
+                {"role": "user", "content": f"Von: {sender}\nBetreff: {subject}\n\n{strip_quotes(body)[:MAX_BODY]}"},
             ],
         }
         try:

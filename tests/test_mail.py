@@ -433,3 +433,17 @@ def test_excerpt_is_stored_used_and_pruned(conn):
     assert feedback.prune(conn, now=datetime(2027, 1, 1, tzinfo=TZ)) == 1
     rows = dict(conn.execute("SELECT item_id, excerpt FROM mail_feedback").fetchall())
     assert rows == {"a": "Kannst du die Folien schicken?", "b": None}
+
+
+def test_model_runs_cpu_only_and_without_quotes():
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"message": {"content": json.dumps(
+            {"kind": "nichts", "title": "", "deadline_text": "", "effort_min": 0, "priority": "mittel"})}})
+
+    client = OllamaClient("http://127.0.0.1:11434", "m", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    client.classify_mail("A", "B", "Neu\n\n\n\n> alt\n> älter\nEnde", today=NOW.date())
+    assert seen["options"]["num_gpu"] == 0
+    assert seen["messages"][-1]["content"].endswith("Neu\n\nEnde")
