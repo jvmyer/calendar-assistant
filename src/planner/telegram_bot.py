@@ -140,11 +140,45 @@ async def _run(settings: Settings, wake: threading.Event, stop: threading.Event)
         if reply.changed:
             wake.set()
 
+    transcriber = None   # Whisper wird erst bei der ersten Sprachnachricht geladen
+
+    def voice_job(audio: bytes, duration: int | None, message_id: int | None):
+        """Läuft in einem Hilfs-Thread (Whisper + Modell brauchen CPU-Zeit, der Bot bleibt bedienbar)."""
+        nonlocal transcriber
+        from .llm import OllamaClient
+        from .voice import Transcriber, handle_voice
+
+        if transcriber is None:
+            transcriber = Transcriber(settings.whisper_model, settings.whisper_dir)
+        llm = OllamaClient(settings.ollama_url, settings.ollama_model)
+        try:
+            with closing(connect(settings.db_path)) as conn:
+                return handle_voice(conn, transcriber, llm, audio, duration=duration, message_id=message_id)
+        finally:
+            llm.close()
+
+    async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        msg = update.message
+        if not is_allowed(update) or msg is None:
+            return
+        media = msg.voice or msg.audio
+        if media is None:
+            return
+        status = await msg.reply_text("🎙️ Höre rein … (dauert etwa eine halbe Minute)")
+        try:
+            audio = bytes(await (await media.get_file()).download_as_bytearray())
+            text, buttons = await asyncio.to_thread(voice_job, audio, media.duration, msg.message_id)
+        except Exception as exc:  # noqa: BLE001 – kein Text loggen (Token in URLs)
+            log.error("Sprachnachricht fehlgeschlagen: %s", type(exc).__name__)
+            text, buttons = "🎙️ Das hat nicht geklappt. Bitte nochmal oder als Text schicken.", []
+        await status.edit_text(text, reply_markup=markup(buttons))
+
     async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         log.error("Bot-Fehler: %s", type(context.error).__name__)   # kein Text: könnte die URL enthalten
 
     app = Application.builder().token(settings.telegram_bot_token).build()
     app.add_handler(MessageHandler(filters.TEXT, on_message))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_error_handler(on_error)
     async with app:

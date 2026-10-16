@@ -11,6 +11,7 @@ from .calendar_client import CalendarClient
 from .config import load_settings
 from .db import connect, set_meta
 from .google_auth import ReauthNeeded, get_credentials, login
+from .rules import TZ
 
 
 def cmd_login(_args) -> int:
@@ -212,7 +213,6 @@ def cmd_mail_review(args) -> int:
     from .connectors.owa import OwaAuthError, OwaClient
     from .llm import OllamaClient
     from .mail_flow import format_review, review
-    from .rules import TZ
 
     settings = load_settings()
     if not settings.telegram_enabled:
@@ -235,6 +235,28 @@ def cmd_mail_review(args) -> int:
     print(f"{len(todo)} Aufgaben, {len(maybe)} Vorschläge, {nothing} ohne To-do, {failed} Fehler – "
           + ("Liste per Telegram geschickt." if ok else "Telegram-Versand fehlgeschlagen."))
     return 0 if ok else 1
+
+
+def cmd_voice_test(args) -> int:
+    """Audiodatei transkribieren und verstehen – zum Testen, speichert nichts."""
+    import time
+    from pathlib import Path
+
+    from .llm import OllamaClient
+    from .voice import Transcriber, understand
+
+    settings = load_settings()
+    t0 = time.monotonic()
+    text = Transcriber(settings.whisper_model, settings.whisper_dir).transcribe(Path(args.file).read_bytes())
+    t1 = time.monotonic()
+    llm = OllamaClient(settings.ollama_url, settings.ollama_model)
+    try:
+        fields = understand(llm, text, connect(settings.db_path), datetime.now(TZ))
+    finally:
+        llm.close()
+    print(f"Whisper ({settings.whisper_model}, {t1 - t0:.0f} s): {text}")
+    print(f"Modell ({time.monotonic() - t1:.0f} s): {fields}")
+    return 0
 
 
 def cmd_ilias_sync(_args) -> int:
@@ -528,6 +550,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mail-login", help="HKA-Mail-Login prüfen (1 Versuch) und Sperre aufheben").set_defaults(
         fn=cmd_mail_login)
     sub.add_parser("mail-sync", help="HKA-Mails jetzt abrufen und auswerten").set_defaults(fn=cmd_mail_sync)
+    p_vt = sub.add_parser("voice-test", help="Audiodatei transkribieren + verstehen (speichert nichts)")
+    p_vt.add_argument("file")
+    p_vt.set_defaults(fn=cmd_voice_test)
     p_rev = sub.add_parser("mail-review", help="Probelauf: letzte Mails bewerten, Liste per Telegram (trägt nichts ein)")
     p_rev.add_argument("-n", type=int, default=10)
     p_rev.set_defaults(fn=cmd_mail_review)

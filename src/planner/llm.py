@@ -50,6 +50,24 @@ SCHEMA = {
 }
 
 
+SPOKEN = """Jonah hat seinem Planer eine Sprachnachricht geschickt (automatisch transkribiert, kann Hörfehler enthalten).
+Heute ist {today}. Mach daraus genau eine Aufgabe.
+title: kurzer Titel auf Deutsch (max. 6 Wörter), was zu tun ist.
+deadline_text: die Stelle, die die Frist nennt, WÖRTLICH kopiert (z. B. "bis Freitag", "bis zum 20.10."), sonst leer. Nichts umrechnen.
+effort_min: genannter oder geschätzter Aufwand in Minuten ("zwei Stunden" = 120); ohne Hinweis eine vernünftige Schätzung.
+priority: "hoch", "mittel" oder "niedrig" – wie Jonah es sagt ("wichtig", "dringend" = hoch; "irgendwann", "nicht so wichtig" = niedrig), sonst "mittel".
+area: passender Bereich aus dieser Liste, sonst leer: {areas}"""
+
+
+@dataclass(frozen=True)
+class SpokenTask:
+    title: str
+    deadline_text: str
+    effort_min: int | None
+    priority: str
+    area: str
+
+
 class LlmError(Exception):
     """Modell nicht erreichbar oder Antwort unbrauchbar – später erneut versuchen."""
 
@@ -118,6 +136,48 @@ class OllamaClient:
         except (httpx.HTTPError, ValueError, KeyError) as exc:
             raise LlmError(type(exc).__name__) from exc
         return parse_verdict(content)
+
+    def extract_spoken_task(self, text: str, *, today: date, areas: list[str]) -> SpokenTask:
+        """Aufgabe aus einer (transkribierten) Sprachnachricht. `areas`: vorhandene Bereiche (z. B. „Uni/Mathe“)."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "deadline_text": {"type": "string"},
+                "effort_min": {"type": "integer"},
+                "priority": {"type": "string", "enum": list(PRIOS)},
+                "area": {"type": "string", "enum": ["", *areas]},
+            },
+            "required": ["title", "deadline_text", "effort_min", "priority", "area"],
+        }
+        system = SPOKEN.format(today=today_text(today), areas=", ".join(areas) or "(keine)")
+        content = self._chat(system, text[:MAX_BODY], schema)
+        try:
+            data = json.loads(content)
+            title = str(data["title"]).strip()[:120]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise LlmError(f"Antwort unbrauchbar: {type(exc).__name__}") from exc
+        if not title:
+            raise LlmError("kein Titel")
+        try:
+            effort = int(data.get("effort_min") or 0)
+        except (ValueError, TypeError):
+            effort = 0
+        prio = str(data.get("priority") or "").lower()
+        area = str(data.get("area") or "")
+        return SpokenTask(title=title, deadline_text=str(data.get("deadline_text") or "").strip()[:200],
+                          effort_min=effort if 0 < effort <= 24 * 60 else None,
+                          priority=prio if prio in PRIOS else "mittel", area=area if area in areas else "")
+
+    def _chat(self, system: str, user: str, schema: dict) -> str:
+        payload = {"model": self._model, "stream": False, "think": False, "format": schema, "options": OPTIONS,
+                   "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        try:
+            resp = self._http.post(f"{self._url}/api/chat", json=payload)
+            resp.raise_for_status()
+            return resp.json()["message"]["content"]
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            raise LlmError(type(exc).__name__) from exc
 
     def close(self) -> None:
         self._http.close()

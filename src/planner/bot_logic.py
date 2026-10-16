@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from . import areas, changelog, feedback, proposals, tasks
+from . import areas, changelog, feedback, proposals, tasks, voice
 from .quickadd import parse_quick
 from .rules import TZ
 
@@ -28,7 +28,8 @@ HELP = (
     "/frist <Nr> <Datum|keine> – z. B. /frist 3 20.10. 18:00\n"
     "/aufwand <Nr> <2h|45min>\n"
     "/ilias – neueste ILIAS-Neuigkeiten\n"
-    "/log [n] – letzte Änderungen"
+    "/log [n] – letzte Änderungen\n\n"
+    "🎙️ Sprachnachrichten gehen auch: ich zeige dir, was ich verstanden habe, und lege erst nach „Anlegen“ an."
 )
 
 
@@ -283,6 +284,12 @@ def handle_callback(conn: sqlite3.Connection, data: str) -> Reply:
     action, _, raw = (data or "").partition(":")
     if action == "ilt":
         return _ilias_to_task(conn, raw)
+    if action == "vo":   # Sprachnachricht: vo:<Nr>:ok|no
+        num, _, choice = raw.partition(":")
+        if not num.isdigit():
+            return Reply("Unbekannte Aktion.")
+        text, buttons, changed = voice.decide(conn, int(num), choice == "ok")
+        return Reply(text, buttons, changed=changed)
     if action == "fb":   # Einschätzung zu einer Mail-Aufgabe: fb:<Nr>:<Feld>:<Wert>
         num, _, rest = raw.partition(":")
         fld, _, value = rest.partition(":")

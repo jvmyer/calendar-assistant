@@ -127,6 +127,11 @@ Konfigurierbar, z. B.: Arbeitszeitfenster, Ruhezeiten, max. Stunden pro Bereich 
 - **Morgenübersicht:** Tagesplan in wenigen Zeilen.
 - **Befehle (Entwurf):** `/heute`, `/log`, `/undo <id>`, `/falsch <id>` (Fehlerkennung → Lernsignal), `/prio`, `/pause`.
 
+
+### Sprachnachrichten (umgesetzt 2026-10-16)
+
+Telegram-Sprachnachricht → **faster-whisper** (`small`, int8, nur CPU, Modell in `data/whisper`) → lokales Modell liest Titel, Frist-Stelle (Datum rechnet `deadlines.resolve_phrase`), Aufwand, Priorität und Bereich (nur vorhandene Bereiche) → Vorschau mit **[✅ Anlegen] [❌ Verwerfen]**; angelegt wird erst nach Bestätigung. Ohne Modell: Text wie getippt lesen (`parse_quick`). Max. 5 Min. Aufnahme; Wortlaut wird nach der Entscheidung gelöscht. Test: `planner voice-test <datei>` (speichert nichts). Hinweis: faster-whisper 1.2 braucht PyAV < 16.
+
 ## 9. Hardware & Deployment
 
 | Gerät | RAM | Rolle |

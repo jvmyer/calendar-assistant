@@ -86,6 +86,21 @@ CREATE TABLE IF NOT EXISTS mail_feedback (
     updated_at          TEXT NOT NULL
 );
 
+-- Sprachnachrichten, die auf Bestätigung warten (Wortlaut wird nach der Entscheidung gelöscht)
+CREATE TABLE IF NOT EXISTS voice_notes (
+    id           INTEGER PRIMARY KEY,
+    message_id   INTEGER,
+    transcript   TEXT,
+    title        TEXT NOT NULL,
+    deadline     TEXT,
+    estimate_min INTEGER,
+    priority     TEXT NOT NULL DEFAULT 'mittel',
+    area         TEXT,
+    state        TEXT NOT NULL DEFAULT 'pending',   -- pending | added | dropped
+    task_id      INTEGER REFERENCES tasks(id),
+    created_at   TEXT NOT NULL
+);
+
 -- Vorschläge („nice to know“): nichts davon landet ohne Bestätigung im Kalender
 CREATE TABLE IF NOT EXISTS proposals (
     id            INTEGER PRIMARY KEY,

@@ -25,6 +25,7 @@ class Settings:
     mail_feedback: bool = True            # unter Mail-Aufgaben nach Einschätzung fragen (MAIL_FEEDBACK=0: aus)
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:4b"
+    whisper_model: str = "small"          # tiny | base | small | medium (größer = genauer, langsamer)
 
     @property
     def telegram_enabled(self) -> bool:
@@ -49,6 +50,10 @@ class Settings:
     @property
     def owa_key_path(self) -> Path:
         return self.data_dir / "secrets" / "hka_key.pem"
+
+    @property
+    def whisper_dir(self) -> Path:
+        return self.data_dir / "whisper"
 
     @property
     def rules_path(self) -> Path:
@@ -83,4 +88,5 @@ def load_settings() -> Settings:
         mail_feedback=os.environ.get("MAIL_FEEDBACK", "1").strip() != "0",
         ollama_url=os.environ.get("OLLAMA_URL", "").strip() or "http://127.0.0.1:11434",
         ollama_model=os.environ.get("OLLAMA_MODEL", "").strip() or "qwen3:4b",
+        whisper_model=os.environ.get("WHISPER_MODEL", "").strip() or "small",
     )
