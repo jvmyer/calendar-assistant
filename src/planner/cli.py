@@ -224,7 +224,7 @@ def cmd_mail_review(args) -> int:
     try:
         headers = client.list_inbox(limit=args.n)
         print(f"{len(headers)} Mails geladen, das Modell liest jetzt (ca. 30 s pro Mail) …", flush=True)
-        todo, maybe, nothing, failed = review(client, llm, headers, datetime.now(TZ))
+        todo, maybe, nothing, failed = review(connect(settings.db_path), client, llm, headers, datetime.now(TZ))
     except OwaAuthError as exc:
         print(f"Mail-Login fehlgeschlagen: {exc}")
         return 1

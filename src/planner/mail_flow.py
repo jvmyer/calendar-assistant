@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
-from . import proposals, tasks
+from . import feedback, proposals, tasks
 from .bot_logic import fmt_deadline
 from .deadlines import Deadline, find_deadlines, resolve_phrase
 from .llm import LlmError, MailVerdict
@@ -69,7 +69,8 @@ def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: dateti
     posted = datetime.fromisoformat(row["received"]).astimezone(TZ)
     try:
         body = client.get_body(row["item_id"])
-        verdict = llm.classify_mail(row["sender"] or "", row["subject"] or "", body, today=now.astimezone(TZ).date())
+        verdict = llm.classify_mail(row["sender"] or "", row["subject"] or "", body, today=now.astimezone(TZ).date(),
+                                    examples=feedback.example_messages(feedback.examples(conn, row["sender"] or "")))
     except (httpx.HTTPError, LlmError, ValueError) as exc:
         raise _Retry(type(exc).__name__) from exc
     res = MailResult(verdict)
@@ -84,6 +85,13 @@ def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: dateti
         if task_id is None:   # schon angelegt (Meldung war fehlgeschlagen)
             task_id = int(conn.execute("SELECT id FROM tasks WHERE source = 'mail' AND source_ref = ?",
                                        (ref,)).fetchone()["id"])
+        else:
+            if verdict.priority != "mittel":
+                tasks.set_priority(conn, task_id, feedback.PRIO_BOOST[verdict.priority], actor="mail")
+            feedback.record(conn, task_id, item_id=ref, sender=row["sender"] or "", subject=row["subject"] or "",
+                            received=row["received"], kind=verdict.kind, title=_title(verdict, row["subject"]),
+                            deadline_text=verdict.deadline_text, deadline=res.deadline,
+                            effort=verdict.effort_min, prio=verdict.priority)
         res.task_id = task_id
     else:
         res.proposal_id = proposals.add_proposal(
@@ -92,11 +100,19 @@ def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: dateti
     return res
 
 
-def build_message(row: sqlite3.Row, res: MailResult) -> tuple[str, list[list[tuple[str, str]]]] | None:
-    """Nur Aufgaben werden hier gemeldet; Vorschläge meldet der Planer (mit Bestätigungs-Buttons)."""
+def build_message(row: sqlite3.Row, res: MailResult, conn: sqlite3.Connection | None = None
+                  ) -> tuple[str, list[list[tuple[str, str]]]] | None:
+    """Nur Aufgaben werden hier gemeldet; Vorschläge meldet der Planer (mit Bestätigungs-Buttons).
+
+    Mit `conn` (Einschätzung eingeschaltet): Karte mit Buttons für Art, Priorität, Aufwand und Frist.
+    """
     if res.task_id is None:
         return None
     posted = datetime.fromisoformat(row["received"]).astimezone(TZ)
+    source = f"Quelle: {row['subject']} ({row['sender']}, {posted:%d.%m.})"
+    if conn is not None:
+        text, buttons = feedback.card(conn, res.task_id, header="📧➕ Aus Mail in den Kalender übernommen")
+        return f"{text}\n{source}", buttons
     when = f"bis {fmt_deadline(res.deadline)}" if res.deadline else "ohne Frist (Frist ergänzen: /frist " \
         f"{res.task_id} 20.10.)"
     text = (f"📧➕ Aus Mail in den Kalender übernommen\n"
@@ -106,7 +122,7 @@ def build_message(row: sqlite3.Row, res: MailResult) -> tuple[str, list[list[tup
 
 
 def process_mails(conn: sqlite3.Connection, client, llm, notifier, now: datetime, *,
-                  max_items: int = MAX_ITEMS_PER_RUN) -> int:
+                  max_items: int = MAX_ITEMS_PER_RUN, ask_feedback: bool = True) -> int:
     """Neue Mails verarbeiten (älteste zuerst). Rückgabe: Anzahl abgeschlossener Mails."""
     rows = conn.execute("SELECT * FROM mails WHERE state = 'new' ORDER BY received LIMIT ?", (max_items,)).fetchall()
     with_buttons = getattr(notifier, "send_with_buttons", None)
@@ -133,7 +149,7 @@ def process_mails(conn: sqlite3.Connection, client, llm, notifier, now: datetime
             else:
                 fail(row["item_id"], attempts + 1)
             continue
-        msg = build_message(row, res)
+        msg = build_message(row, res, conn if ask_feedback else None)
         if msg is None:
             settle(row["item_id"], res.verdict.kind)
             finished += 1
@@ -162,13 +178,14 @@ def priority(deadline: str | None, now: datetime) -> str:
     return next((label for label, limit in PRIO if left <= limit), "🟢 niedrig")
 
 
-def review(client, llm, headers, now: datetime) -> tuple[list[tuple], list[tuple], int, int]:
+def review(conn: sqlite3.Connection, client, llm, headers, now: datetime) -> tuple[list[tuple], list[tuple], int, int]:
     """(Aufgaben, Vorschläge, Anzahl „nichts“, Fehler). Aufgaben: (Prio, Frist, Titel, Aufwand, Betreff, Absender)."""
     todo, maybe, nothing, failed = [], [], 0, 0
     for h in headers:
         try:
             body = client.get_body(h.item_id)
-            v = llm.classify_mail(h.sender, h.subject, body, today=now.astimezone(TZ).date())
+            v = llm.classify_mail(h.sender, h.subject, body, today=now.astimezone(TZ).date(),
+                                  examples=feedback.example_messages(feedback.examples(conn, h.sender)))
         except (httpx.HTTPError, LlmError, ValueError):
             failed += 1
             continue
@@ -176,9 +193,9 @@ def review(client, llm, headers, now: datetime) -> tuple[list[tuple], list[tuple
             nothing += 1
             continue
         deadline = find_deadline(v, h.subject, body, posted=h.received, now=now)
-        entry = (priority(deadline, now), deadline, _title(v, h.subject), v.effort_min, h.subject, h.sender)
+        entry = (f"{feedback.PRIO_ICON[v.priority]} {v.priority}", deadline, _title(v, h.subject), v.effort_min, h.subject, h.sender)
         (todo if v.kind == "aufgabe" else maybe).append(entry)
-    order = {"🔴 hoch": 0, "🟠 mittel": 1, "🟢 niedrig": 2}
+    order = {f"{feedback.PRIO_ICON[q]} {q}": i for i, q in enumerate(feedback.PRIOS)}
     todo.sort(key=lambda e: (order[e[0]], e[1] or "9999"))
     return todo, maybe, nothing, failed
 

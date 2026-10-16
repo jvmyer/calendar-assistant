@@ -63,6 +63,28 @@ CREATE TABLE IF NOT EXISTS mails (
     attempts   INTEGER NOT NULL DEFAULT 0
 );
 
+-- Einschätzung des Nutzers zu Mail-Aufgaben = Lernbeispiele fürs Modell (kein Mailtext)
+CREATE TABLE IF NOT EXISTS mail_feedback (
+    task_id             INTEGER PRIMARY KEY REFERENCES tasks(id),
+    item_id             TEXT,
+    sender              TEXT,
+    subject             TEXT,
+    received            TEXT,
+    model_kind          TEXT,
+    model_title         TEXT,
+    model_deadline_text TEXT,
+    model_deadline      TEXT,
+    model_effort        INTEGER,
+    model_prio          TEXT,
+    user_kind           TEXT,      -- aufgabe | vorschlag | nichts (NULL = nicht angegeben)
+    user_prio           TEXT,      -- hoch | mittel | niedrig
+    user_deadline_ok    INTEGER,   -- 1 = stimmt, 0 = von dir geändert
+    user_deadline       TEXT,
+    user_effort         INTEGER,
+    done                INTEGER NOT NULL DEFAULT 0,
+    updated_at          TEXT NOT NULL
+);
+
 -- Vorschläge („nice to know“): nichts davon landet ohne Bestätigung im Kalender
 CREATE TABLE IF NOT EXISTS proposals (
     id            INTEGER PRIMARY KEY,

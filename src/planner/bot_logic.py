@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from . import areas, changelog, proposals, tasks
+from . import areas, changelog, feedback, proposals, tasks
 from .quickadd import parse_quick
 from .rules import TZ
 
@@ -252,6 +252,11 @@ def handle_message(
         if cmd == "/verwerfen":
             return _set_status(conn, arg, "dropped")
         return Reply("Das Kommando kenne ich nicht.\n\n" + HELP)
+    waiting = feedback.awaiting(conn)   # Antwort auf „✏️ Frist ändern“?
+    if waiting is not None:
+        got = feedback.receive_deadline(conn, waiting, text)
+        if got is not None:
+            return Reply(got[0], got[1], changed=True)
     return quick_add(conn, text, message_id=message_id, now=now)
 
 
@@ -278,6 +283,13 @@ def handle_callback(conn: sqlite3.Connection, data: str) -> Reply:
     action, _, raw = (data or "").partition(":")
     if action == "ilt":
         return _ilias_to_task(conn, raw)
+    if action == "fb":   # Einschätzung zu einer Mail-Aufgabe: fb:<Nr>:<Feld>:<Wert>
+        num, _, rest = raw.partition(":")
+        fld, _, value = rest.partition(":")
+        if not num.isdigit():
+            return Reply("Unbekannte Aktion.")
+        text, buttons, changed = feedback.apply(conn, int(num), fld, value)
+        return Reply(text, buttons, changed=changed)
     try:
         item_id = int(raw)
     except ValueError:

@@ -85,3 +85,8 @@ def set_deadline(conn: sqlite3.Connection, task_id: int, deadline: str | None, *
 
 def set_estimate(conn: sqlite3.Connection, task_id: int, minutes: int | None, *, actor: str) -> None:
     _update(conn, task_id, "estimate_min", minutes, actor=actor)
+
+
+def set_priority(conn: sqlite3.Connection, task_id: int, boost: float, *, actor: str) -> None:
+    """Prioritätsfaktor für den Planer (1.0 = normal, >1 wichtiger)."""
+    _update(conn, task_id, "priority_boost", boost, actor=actor)

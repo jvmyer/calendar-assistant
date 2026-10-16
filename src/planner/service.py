@@ -214,7 +214,7 @@ def mail_step(
     try:
         sync_inbox(conn, client.list_inbox(), now=now)
         set_meta(conn, "mail_last_sync", now.isoformat())
-        return process_mails(conn, client, llm, notifier, now)
+        return process_mails(conn, client, llm, notifier, now, ask_feedback=settings.mail_feedback)
     except OwaAuthError as exc:
         set_meta(conn, "mail_blocked", "1")
         changelog.log(conn, actor="system", action="auth.expired", entity="mail", detail={"reason": str(exc)[:200]})

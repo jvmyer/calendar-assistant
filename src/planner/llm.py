@@ -15,6 +15,7 @@ from datetime import date
 import httpx
 
 KINDS = ("aufgabe", "vorschlag", "nichts")
+PRIOS = ("hoch", "mittel", "niedrig")
 MAX_BODY = 3000   # Zeichen; längere Mails werden gekürzt (Kontext des kleinen Modells)
 WEEKDAYS_DE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
@@ -28,7 +29,9 @@ Wichtig: Eine Pflicht (Anmeldung, Zahlung, Rückmeldung, Antwort), ohne die Jona
 Ist etwas freiwillig ("kostenlos", "freiwillig", "kommt vorbei"), ist es "vorschlag", nicht "nichts".
 title: kurzer Titel auf Deutsch (max. 6 Wörter), was zu tun ist; bei "nichts" leer.
 deadline_text: die Stelle aus der Mail, die die Frist nennt, WÖRTLICH kopiert (z. B. "bis Sonntagabend", "bis zum 29.01.2027", "vom 02.11. bis 13.11.2026"). Nichts umrechnen. Keine Frist → leerer Text.
-effort_min: geschätzter Aufwand in Minuten (bei "nichts" 0)."""
+effort_min: geschätzter Aufwand in Minuten (bei "nichts" 0).
+priority: "hoch" (große Folgen bei Versäumnis, z. B. Prüfung, Zahlung, Exmatrikulation, knappe Frist), "mittel" (normale Aufgabe), "niedrig" (kann warten, kaum Folgen).
+Falls vorher Beispiele kommen: Das sind frühere Mails mit Jonahs eigener Einschätzung. Richte dich danach, besonders bei gleichen Absendern."""
 
 SCHEMA = {
     "type": "object",
@@ -37,8 +40,9 @@ SCHEMA = {
         "title": {"type": "string"},
         "deadline_text": {"type": "string"},
         "effort_min": {"type": "integer"},
+        "priority": {"type": "string", "enum": ["hoch", "mittel", "niedrig"]},
     },
-    "required": ["kind", "title", "deadline_text", "effort_min"],
+    "required": ["kind", "title", "deadline_text", "effort_min", "priority"],
 }
 
 
@@ -52,6 +56,7 @@ class MailVerdict:
     title: str
     deadline_text: str
     effort_min: int | None
+    priority: str = "mittel"   # hoch | mittel | niedrig
 
 
 def today_text(d: date) -> str:
@@ -75,6 +80,7 @@ def parse_verdict(raw: str) -> MailVerdict:
         title=str(data.get("title") or "").strip()[:120],
         deadline_text=str(data.get("deadline_text") or "").strip()[:200],
         effort_min=effort if 0 < effort <= 24 * 60 else None,
+        priority=prio if (prio := str(data.get("priority") or "").strip().lower()) in PRIOS else "mittel",
     )
 
 
@@ -83,12 +89,15 @@ class OllamaClient:
         self._url, self._model = url.rstrip("/"), model
         self._http = client or httpx.Client(timeout=timeout)
 
-    def classify_mail(self, sender: str, subject: str, body: str, *, today: date) -> MailVerdict:
+    def classify_mail(self, sender: str, subject: str, body: str, *, today: date,
+                      examples: list[dict] | None = None) -> MailVerdict:
+        """`examples`: frühere Mails mit der Einschätzung des Nutzers (`feedback.example_messages`)."""
         payload = {
             "model": self._model, "stream": False, "think": False, "format": SCHEMA,
             "options": {"temperature": 0, "num_ctx": 4096},
             "messages": [
                 {"role": "system", "content": SYSTEM.format(today=today_text(today))},
+                *(examples or []),
                 {"role": "user", "content": f"Von: {sender}\nBetreff: {subject}\n\n{body[:MAX_BODY]}"},
             ],
         }

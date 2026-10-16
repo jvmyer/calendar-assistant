@@ -100,8 +100,9 @@ class Model:
     def __init__(self, verdicts=None, error=None):
         self.verdicts, self.error, self.calls = verdicts or {}, error, 0
 
-    def classify_mail(self, sender, subject, body, *, today):
+    def classify_mail(self, sender, subject, body, *, today, examples=None):
         self.calls += 1
+        self.examples = examples
         if self.error:
             raise self.error
         return self.verdicts[subject]
@@ -129,8 +130,9 @@ def test_task_proposal_and_nothing(conn):
         ("Folien Marktanalyse", "mail", "2026-10-18", 60)
     prop = conn.execute("SELECT * FROM proposals").fetchone()
     assert prop["title"] == "Spieleabend" and prop["state"] == "pending"   # nur nach Bestätigung in den Kalender
-    assert len(ch.sent) == 1 and "#1 Folien Marktanalyse – bis 18.10." in ch.sent[0][0]
-    assert ch.sent[0][1] == [[("🗑 #1 verwerfen", "drop:1")]]
+    assert len(ch.sent) == 1 and "#1 Folien Marktanalyse" in ch.sent[0][0] and "bis 18.10." in ch.sent[0][0]
+    assert "Quelle: Folien bis Sonntag? (Lisa, 16.10.)" in ch.sent[0][0]
+    assert ch.sent[0][1][-1] == [("✅ Fertig", "fb:1:x:ok")]   # Einschätzungskarte
     assert dict(conn.execute("SELECT item_id, verdict FROM mails").fetchall()) == \
         {"a": "aufgabe", "b": "vorschlag", "c": "nichts"}
 
@@ -286,12 +288,12 @@ def test_review_sorts_by_priority_and_writes_nothing(conn):
     headers = [hdr(1, subject="Semesterbeitrag"), hdr(2, subject="Folien"), hdr(3, subject="Spieleabend"),
                hdr(4, subject="News")]
     model = Model({
-        "Semesterbeitrag": MailVerdict("aufgabe", "Semesterbeitrag zahlen", "bis zum 29.01.2027", 15),
-        "Folien": MailVerdict("aufgabe", "Folien schicken", "bis Sonntagabend", 60),
+        "Semesterbeitrag": MailVerdict("aufgabe", "Semesterbeitrag zahlen", "bis zum 29.01.2027", 15, "niedrig"),
+        "Folien": MailVerdict("aufgabe", "Folien schicken", "bis Sonntagabend", 60, "hoch"),
         "Spieleabend": MailVerdict("vorschlag", "Spieleabend", "", None),
         "News": MailVerdict("nichts", "", "", None),
     })
-    todo, maybe, nothing, failed = review(Mailbox(), model, headers, NOW)
+    todo, maybe, nothing, failed = review(conn, Mailbox(), model, headers, NOW)
     assert [t[2] for t in todo] == ["Folien schicken", "Semesterbeitrag zahlen"]
     assert len(maybe) == 1 and (nothing, failed) == (1, 0)
     text = format_review(todo, maybe, nothing, failed, 4)
@@ -304,3 +306,106 @@ def test_mail_step_survives_broken_certificate(conn, tmp_path):
         raise FileNotFoundError("hka_chain.pem")
     assert mail_step(conn, settings(tmp_path), Channel(), NOW, owa_factory=broken, llm_factory=FakeModel) is None
     assert get_meta(conn, "mail_blocked") is None   # kein Login-Problem → nicht sperren
+
+
+# -- Einschätzung des Nutzers + Lernbeispiele ------------------------------------------------------------------
+from planner import feedback
+from planner.bot_logic import handle_callback, handle_message
+
+
+def mail_task(conn, subject="Folien bis Sonntag?", sender="Lisa", verdict=None):
+    add_mail(conn, f"id-{subject}", subject, sender=sender)
+    verdict = verdict or MailVerdict("aufgabe", "Folien schicken", "bis Sonntagabend", 60, "hoch")
+    process_mails(conn, Mailbox(), Model({subject: verdict}), Channel(), NOW)
+    return conn.execute("SELECT id FROM tasks ORDER BY id DESC").fetchone()["id"]
+
+
+def test_model_priority_sets_planner_boost_and_is_recorded(conn):
+    tid = mail_task(conn)
+    assert conn.execute("SELECT priority_boost FROM tasks WHERE id = ?", (tid,)).fetchone()[0] == 1.5
+    f = conn.execute("SELECT * FROM mail_feedback WHERE task_id = ?", (tid,)).fetchone()
+    assert (f["model_kind"], f["model_prio"], f["model_deadline"], f["sender"]) == ("aufgabe", "hoch", "2026-10-18", "Lisa")
+
+
+def test_buttons_change_task_and_card(conn):
+    tid = mail_task(conn)
+    r = handle_callback(conn, f"fb:{tid}:p:niedrig")
+    assert r.changed and "🟢 niedrig" in r.text and ("• 🟢 niedrig", f"fb:{tid}:p:niedrig") in r.buttons[1]
+    assert conn.execute("SELECT priority_boost FROM tasks WHERE id = ?", (tid,)).fetchone()[0] == 0.6
+    r = handle_callback(conn, f"fb:{tid}:e:120")
+    assert "~2 h" in r.text
+    assert conn.execute("SELECT estimate_min FROM tasks WHERE id = ?", (tid,)).fetchone()[0] == 120
+    r = handle_callback(conn, f"fb:{tid}:x:ok")
+    assert "Gespeichert" in r.text and r.buttons == []
+    f = conn.execute("SELECT * FROM mail_feedback WHERE task_id = ?", (tid,)).fetchone()
+    assert (f["user_kind"], f["user_prio"], f["user_effort"], f["user_deadline_ok"], f["done"]) == \
+        ("aufgabe", "niedrig", 120, 1, 1)
+
+
+def test_not_a_task_drops_it(conn):
+    tid = mail_task(conn)
+    r = handle_callback(conn, f"fb:{tid}:k:vorschlag")
+    assert "nur ein Vorschlag" in r.text and r.changed
+    assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()[0] == "dropped"
+
+
+def test_change_deadline_by_message(conn):
+    tid = mail_task(conn)
+    r = handle_callback(conn, f"fb:{tid}:d:edit")
+    assert "Schick mir die richtige Frist" in r.text
+    r = handle_message(conn, "25.10. 12:00", now=NOW)
+    assert "Frist übernommen" in r.text and "bis 25.10. 12:00" in r.text
+    f = conn.execute("SELECT user_deadline_ok, user_deadline FROM mail_feedback WHERE task_id = ?", (tid,)).fetchone()
+    assert f["user_deadline_ok"] == 0 and f["user_deadline"].startswith("2026-10-25T12:00")
+    # danach ist eine Nachricht wieder eine neue Aufgabe
+    assert "Aufgabe angelegt" in handle_message(conn, "Wäsche waschen", now=NOW).text
+
+
+def test_no_date_means_new_task_not_deadline(conn):
+    tid = mail_task(conn)
+    handle_callback(conn, f"fb:{tid}:d:edit")
+    assert "Aufgabe angelegt" in handle_message(conn, "Einkaufen gehen", now=NOW).text
+    assert conn.execute("SELECT deadline FROM tasks WHERE id = ?", (tid,)).fetchone()[0] == "2026-10-18"
+
+
+def test_feedback_becomes_examples_for_the_model_same_sender_first(conn):
+    a = mail_task(conn, "Prüfungsanmeldung", sender="Prüfungsamt",
+                  verdict=MailVerdict("aufgabe", "Prüfung anmelden", "bis 13.11.2026", 10, "mittel"))
+    b = mail_task(conn, "Folien", sender="Lisa")
+    mail_task(conn, "Unbewertet", sender="Prüfungsamt")   # ohne Einschätzung: kein Beispiel
+    handle_callback(conn, f"fb:{a}:p:hoch")
+    handle_callback(conn, f"fb:{b}:k:nichts")
+    exs = feedback.examples(conn, "Prüfungsamt")
+    assert [e.subject for e in exs] == ["Prüfungsanmeldung", "Folien"]
+    assert exs[0].answer["priority"] == "hoch" and exs[1].answer == {
+        "kind": "nichts", "title": "", "deadline_text": "", "effort_min": 0, "priority": "hoch"}
+    msgs = feedback.example_messages(exs)
+    assert msgs[-2]["content"].startswith("Von: Prüfungsamt\nBetreff: Prüfungsanmeldung")   # direkt vor der neuen Mail
+    # und sie kommen beim nächsten Lauf beim Modell an
+    add_mail(conn, "neu", "Prüfungstermine", sender="Prüfungsamt")
+    model = Model({"Prüfungstermine": MailVerdict("nichts", "", "", None)})
+    process_mails(conn, Mailbox(), model, Channel(), NOW)
+    assert model.examples and "Prüfungsanmeldung" in model.examples[-2]["content"]
+
+
+def test_feedback_can_be_switched_off(conn):
+    add_mail(conn, "a", "Abgabe")
+    ch = Channel()
+    process_mails(conn, Mailbox(), Model({"Abgabe": MailVerdict("aufgabe", "Abgabe", "", None)}), ch, NOW,
+                  ask_feedback=False)
+    assert ch.sent[0][1] == [[("🗑 #1 verwerfen", "drop:1")]]
+
+
+def test_ollama_receives_examples_between_system_and_mail():
+    seen = {}
+
+    def handler(request):
+        seen["messages"] = json.loads(request.content)["messages"]
+        return httpx.Response(200, json={"message": {"content": json.dumps(
+            {"kind": "aufgabe", "title": "x", "deadline_text": "", "effort_min": 5, "priority": "hoch"})}})
+
+    client = OllamaClient("http://127.0.0.1:11434", "m", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    ex = [{"role": "user", "content": "Von: A"}, {"role": "assistant", "content": "{}"}]
+    v = client.classify_mail("A", "B", "C", today=NOW.date(), examples=ex)
+    assert v.priority == "hoch"
+    assert [m["role"] for m in seen["messages"]] == ["system", "user", "assistant", "user"]
