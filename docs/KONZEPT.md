@@ -179,8 +179,7 @@ Nach Schritt 4 ist das Tool bereits im Alltag nutzbar.
 ## 12. Offene Punkte
 
 **Stand 2026-10-16:** Schritte 1–7 des MVP laufen produktiv auf dem Acer-Server (`<server>`, fest <server-ip>):
-Planer, Telegram (Text + Sprache), Stundenplan, ILIAS, HKA-Mail, Gmail (Code fertig, Einschalten nach
-neuem Google-Login), lokales Modell (Ollama, qwen3:4b, nur CPU), Einschätzung per Telegram als Lernsignal (Few-Shot).
+Planer, Telegram (Text + Sprache), Stundenplan, ILIAS, HKA-Mail, Gmail (seit 2026-10-16 eingeschaltet), lokales Modell (Ollama, qwen3:4b, nur CPU), Einschätzung per Telegram als Lernsignal (Few-Shot).
 Sicherheits-Check 2026-10-16: nur LAN-SSH mit Schlüssel, Ollama nur lokal, Geheimnisse 600, Dienst ohne
 Root mit UMask 0077, keine bekannten Schwachstellen in Abhängigkeiten (pip-audit), Repo privat.
 
@@ -191,7 +190,7 @@ Root mit UMask 0077, keine bekannten Schwachstellen in Abhängigkeiten (pip-audi
 - [x] Google-Cloud-Projekt, bleibt im Teststatus (7-Tage-Login; Bot erinnert)
 - [x] ILIAS: Aufgaben mit Frist automatisch in den Kalender
 - [x] Sprachnachrichten (Whisper small, Bestätigung vor dem Anlegen)
-- [ ] **Gmail einschalten:** `uv run planner login` → `deploy/push.sh` → `deploy/push.sh --token` → `./enable-gmail.sh`
+- [x] Gmail eingeschaltet (neuer Google-Login mit Leserecht; nächster Re-Login ca. 23.10.)
 - [ ] **Regeln an den Alltag anpassen** (`data/rules.toml` fehlt → Standard Mo–Sa 9–19 Uhr) und Bereichsgewichte (z. B. Arbeit > Uni)
 - [ ] Trefferquote der Prioritäten nach einigen Tagen auswerten (Nutzer meldet nur Zahlen, keine Inhalte)
 - [ ] Telegram-Meldungen: Zeile „Quelle: Betreff (Absender)“ behalten oder weglassen (Datenschutz) – offen
