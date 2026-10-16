@@ -91,7 +91,7 @@ def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: dateti
             feedback.record(conn, task_id, item_id=ref, sender=row["sender"] or "", subject=row["subject"] or "",
                             received=row["received"], kind=verdict.kind, title=_title(verdict, row["subject"]),
                             deadline_text=verdict.deadline_text, deadline=res.deadline,
-                            effort=verdict.effort_min, prio=verdict.priority)
+                            effort=verdict.effort_min, prio=verdict.priority, body=body)
         res.task_id = task_id
     else:
         res.proposal_id = proposals.add_proposal(

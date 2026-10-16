@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS mail_feedback (
     sender              TEXT,
     subject             TEXT,
     received            TEXT,
+    excerpt             TEXT,      -- Anfang der Mail (≤ 400 Zeichen, ohne Zitate/Signatur), nur lokal
     model_kind          TEXT,
     model_title         TEXT,
     model_deadline_text TEXT,

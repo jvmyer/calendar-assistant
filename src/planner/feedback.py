@@ -5,15 +5,18 @@ Aufwand, Frist. Jede Eingabe wirkt sofort auf die Aufgabe (Planer plant neu) und
 Bei neuen Mails bekommt das Modell die letzten Einschätzungen als Beispiele mit (Few-Shot),
 bevorzugt solche vom selben Absender.
 
-Datenschutz: gespeichert werden nur Absender, Betreff, das Urteil des Modells und deine Angaben –
-kein Mailtext. Die Beispiele bestehen deshalb nur aus Absender + Betreff.
+Gespeichert werden Absender, Betreff, ein kurzer Auszug (≤ 400 Zeichen, ohne Zitate und Signatur),
+das Urteil des Modells und deine Angaben – nur in der lokalen Datenbank auf dem Server. Auszüge
+unbewerteter Mails werden nach 30 Tagen gelöscht.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from . import tasks
 from .changelog import now_iso
@@ -25,6 +28,14 @@ EFFORTS = (15, 30, 60, 120, 240)
 MAX_EXAMPLES = 4
 SAME_SENDER = 2
 AWAIT_KEY = "await_deadline"   # meta: Aufgabe, deren Frist als nächste Textnachricht kommt
+EXCERPT_LEN = 400
+EXCERPT_KEEP = timedelta(days=30)   # Auszüge unbewerteter Mails
+_RATED = ("(done = 1 OR user_kind IS NOT NULL OR user_prio IS NOT NULL OR user_effort IS NOT NULL "
+          "OR user_deadline_ok IS NOT NULL)")
+# Ab hier beginnt Zitiertes oder die Signatur
+_CUT = re.compile(r"^(?:-- ?$|_{5,}|-{5,}|>|Von: |From: |Am .{5,80} schrieb|On .{5,80} wrote|"
+                  r"Mit freundlichen Grüßen|Viele Grüße|Beste Grüße|Liebe Grüße|Best regards|Kind regards)",
+                  re.IGNORECASE)
 
 Buttons = list[list[tuple[str, str]]]
 
@@ -34,16 +45,40 @@ class Example:
     sender: str
     subject: str
     answer: dict   # so hätte das Modell antworten sollen
+    excerpt: str = ""
+
+
+def make_excerpt(body: str, limit: int = EXCERPT_LEN) -> str:
+    """Anfang der Mail ohne Zitate und Signatur, Leerraum zusammengezogen."""
+    kept: list[str] = []
+    for line in body.replace("\r", "").split("\n"):
+        if _CUT.match(line.strip()):
+            break
+        kept.append(line.strip())
+    text = re.sub(r"\s+", " ", " ".join(kept)).strip()
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
 
 
 def record(conn: sqlite3.Connection, task_id: int, *, item_id: str, sender: str, subject: str, received: str,
            kind: str, title: str, deadline_text: str, deadline: str | None, effort: int | None,
-           prio: str | None) -> None:
+           prio: str | None, body: str = "") -> None:
     conn.execute(
-        "INSERT OR IGNORE INTO mail_feedback(task_id, item_id, sender, subject, received, model_kind, model_title, "
-        "model_deadline_text, model_deadline, model_effort, model_prio, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        (task_id, item_id, sender, subject, received, kind, title, deadline_text, deadline, effort, prio, now_iso()))
+        "INSERT OR IGNORE INTO mail_feedback(task_id, item_id, sender, subject, received, excerpt, model_kind, "
+        "model_title, model_deadline_text, model_deadline, model_effort, model_prio, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (task_id, item_id, sender, subject, received, make_excerpt(body), kind, title, deadline_text, deadline,
+         effort, prio, now_iso()))
     conn.commit()
+    prune(conn)
+
+
+def prune(conn: sqlite3.Connection, now: datetime | None = None) -> int:
+    """Löscht Auszüge unbewerteter Mails nach 30 Tagen (Bewertete bleiben als Lernbeispiele)."""
+    cutoff = ((now or datetime.now(UTC)) - EXCERPT_KEEP).isoformat()
+    cur = conn.execute(f"UPDATE mail_feedback SET excerpt = NULL WHERE excerpt IS NOT NULL AND NOT {_RATED} "
+                       "AND updated_at < ?", (cutoff,))
+    conn.commit()
+    return cur.rowcount
 
 
 def _get(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row | None:
@@ -188,21 +223,21 @@ def _answer(f: sqlite3.Row) -> dict:
 
 def examples(conn: sqlite3.Connection, sender: str, *, limit: int = MAX_EXAMPLES) -> list[Example]:
     """Letzte bewertete Mails: zuerst vom selben Absender, dann die neuesten übrigen."""
-    rated = "(done = 1 OR user_kind IS NOT NULL OR user_prio IS NOT NULL OR user_effort IS NOT NULL " \
-            "OR user_deadline_ok IS NOT NULL)"
+    rated = _RATED
     same = conn.execute(f"SELECT * FROM mail_feedback WHERE {rated} AND sender = ? ORDER BY updated_at DESC LIMIT ?",
                         (sender, SAME_SENDER)).fetchall()
     ids = [r["task_id"] for r in same] or [-1]
     rest = conn.execute(
         f"SELECT * FROM mail_feedback WHERE {rated} AND task_id NOT IN ({','.join('?' * len(ids))}) "
         "ORDER BY updated_at DESC LIMIT ?", (*ids, limit - len(same))).fetchall()
-    return [Example(r["sender"] or "", r["subject"] or "", _answer(r)) for r in [*same, *rest]]
+    return [Example(r["sender"] or "", r["subject"] or "", _answer(r), r["excerpt"] or "") for r in [*same, *rest]]
 
 
 def example_messages(exs: list[Example]) -> list[dict]:
     """Beispiele als Gesprächsverlauf (Nutzer: Kopf der Mail → Modell: richtige Antwort)."""
     out: list[dict] = []
     for ex in reversed(exs):   # älteste zuerst, die passendsten stehen direkt vor der neuen Mail
-        out.append({"role": "user", "content": f"Von: {ex.sender}\nBetreff: {ex.subject}\n\n(Text nicht gespeichert)"})
+        text = ex.excerpt or "(Text nicht gespeichert)"
+        out.append({"role": "user", "content": f"Von: {ex.sender}\nBetreff: {ex.subject}\n\n{text}"})
         out.append({"role": "assistant", "content": json.dumps(ex.answer, ensure_ascii=False)})
     return out

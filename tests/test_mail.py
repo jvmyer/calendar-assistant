@@ -409,3 +409,27 @@ def test_ollama_receives_examples_between_system_and_mail():
     v = client.classify_mail("A", "B", "C", today=NOW.date(), examples=ex)
     assert v.priority == "hoch"
     assert [m["role"] for m in seen["messages"]] == ["system", "user", "assistant", "user"]
+
+
+def test_excerpt_cuts_quotes_and_signature():
+    body = ("Hi Jonah,\n\nkannst du die Folien   bis Sonntag schicken?\n\nViele Grüße\nLisa\n"
+            "Am 14.10.2026 schrieb Jonah:\n> alter Text")
+    assert feedback.make_excerpt(body) == "Hi Jonah, kannst du die Folien bis Sonntag schicken?"
+    long = feedback.make_excerpt("wort " * 200)
+    assert len(long) <= feedback.EXCERPT_LEN + 2 and long.endswith("…")
+
+
+def test_excerpt_is_stored_used_and_pruned(conn):
+    add_mail(conn, "a", "Folien", sender="Lisa")
+    model = Model({"Folien": MailVerdict("aufgabe", "Folien schicken", "", 30)})
+    process_mails(conn, Mailbox({"a": "Kannst du die Folien schicken?\n--\nSignatur"}), model, Channel(), NOW)
+    tid = conn.execute("SELECT id FROM tasks").fetchone()[0]
+    handle_callback(conn, f"fb:{tid}:x:ok")
+    [msg, _] = feedback.example_messages(feedback.examples(conn, "Lisa"))
+    assert msg["content"].endswith("Kannst du die Folien schicken?")
+    # unbewertete Auszüge verschwinden nach 30 Tagen, bewertete bleiben
+    add_mail(conn, "b", "Andere", sender="Lisa")
+    process_mails(conn, Mailbox({"b": "Noch was"}), Model({"Andere": MailVerdict("aufgabe", "x", "", 5)}), Channel(), NOW)
+    assert feedback.prune(conn, now=datetime(2027, 1, 1, tzinfo=TZ)) == 1
+    rows = dict(conn.execute("SELECT item_id, excerpt FROM mail_feedback").fetchall())
+    assert rows == {"a": "Kannst du die Folien schicken?", "b": None}
