@@ -100,6 +100,13 @@ def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: dateti
     return res
 
 
+LABELS = {"hka": "📧 Aus HKA-Mail", "gmail": "✉️ Aus Gmail"}
+
+
+def _label(row: sqlite3.Row) -> str:
+    return LABELS.get(row["source"], "📧 Aus Mail")
+
+
 def build_message(row: sqlite3.Row, res: MailResult, conn: sqlite3.Connection | None = None
                   ) -> tuple[str, list[list[tuple[str, str]]]] | None:
     """Nur Aufgaben werden hier gemeldet; Vorschläge meldet der Planer (mit Bestätigungs-Buttons).
@@ -111,20 +118,21 @@ def build_message(row: sqlite3.Row, res: MailResult, conn: sqlite3.Connection | 
     posted = datetime.fromisoformat(row["received"]).astimezone(TZ)
     source = f"Quelle: {row['subject']} ({row['sender']}, {posted:%d.%m.})"
     if conn is not None:
-        text, buttons = feedback.card(conn, res.task_id, header="📧➕ Aus Mail in den Kalender übernommen")
+        text, buttons = feedback.card(conn, res.task_id, header=f"{_label(row)}➕ in den Kalender übernommen")
         return f"{text}\n{source}", buttons
     when = f"bis {fmt_deadline(res.deadline)}" if res.deadline else "ohne Frist (Frist ergänzen: /frist " \
         f"{res.task_id} 20.10.)"
-    text = (f"📧➕ Aus Mail in den Kalender übernommen\n"
+    text = (f"{_label(row)}➕ in den Kalender übernommen\n"
             f"• #{res.task_id} {_title(res.verdict, row['subject'])} – {when}\n"
             f"Quelle: {row['subject']} ({row['sender']}, {posted:%d.%m.})")
     return text, [[(f"🗑 #{res.task_id} verwerfen", f"drop:{res.task_id}")]]
 
 
 def process_mails(conn: sqlite3.Connection, client, llm, notifier, now: datetime, *,
-                  max_items: int = MAX_ITEMS_PER_RUN, ask_feedback: bool = True) -> int:
+                  max_items: int = MAX_ITEMS_PER_RUN, ask_feedback: bool = True, source: str = "hka") -> int:
     """Neue Mails verarbeiten (älteste zuerst). Rückgabe: Anzahl abgeschlossener Mails."""
-    rows = conn.execute("SELECT * FROM mails WHERE state = 'new' ORDER BY received LIMIT ?", (max_items,)).fetchall()
+    rows = conn.execute("SELECT * FROM mails WHERE state = 'new' AND source = ? ORDER BY received LIMIT ?",
+                        (source, max_items)).fetchall()
     with_buttons = getattr(notifier, "send_with_buttons", None)
     finished = 0
 

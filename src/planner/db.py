@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS ilias_news (
 
 -- HKA-Mails: nur Kopfdaten (Inhalte werden nie gespeichert); Erstimport gilt als „seen“
 CREATE TABLE IF NOT EXISTS mails (
-    item_id    TEXT PRIMARY KEY,         -- OWA-ItemId
+    item_id    TEXT PRIMARY KEY,         -- OWA-ItemId bzw. Gmail-Nachrichten-ID
+    source     TEXT NOT NULL DEFAULT 'hka',  -- hka | gmail
     received   TEXT NOT NULL,            -- ISO 8601
     sender     TEXT,
     subject    TEXT,
@@ -204,6 +205,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(ilias_news)")}
     if "attempts" not in cols:
         conn.execute("ALTER TABLE ilias_news ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(mails)")}
+    if "source" not in cols:
+        conn.execute("ALTER TABLE mails ADD COLUMN source TEXT NOT NULL DEFAULT 'hka'")
         conn.commit()
 
 

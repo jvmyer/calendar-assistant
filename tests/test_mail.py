@@ -6,7 +6,8 @@ import httpx
 import pytest
 
 from planner.config import Settings
-from planner.connectors.owa import MailHeader, OwaAuthError, OwaClient, sync_inbox
+from planner.connectors.mailbox import MailHeader, sync_inbox
+from planner.connectors.owa import OwaAuthError, OwaClient
 from planner.db import connect, get_meta
 from planner.deadlines import resolve_phrase
 from planner.llm import LlmError, MailVerdict, OllamaClient, parse_verdict, today_text

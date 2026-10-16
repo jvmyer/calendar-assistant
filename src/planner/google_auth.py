@@ -6,6 +6,8 @@ In diesem Fall wird `ReauthNeeded` geworfen; der Aufrufer (Bot/CLI) fordert zum 
 
 from __future__ import annotations
 
+import json
+
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -17,6 +19,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/tasks",
 ]
+GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"   # nur lesen
+LOGIN_SCOPES = [*SCOPES, GMAIL_SCOPE]
 
 
 class ReauthNeeded(Exception):
@@ -39,7 +43,7 @@ def _client_config(settings: Settings) -> dict:
 
 def login(settings: Settings) -> Credentials:
     """Interaktiver Login (öffnet den Browser) und speichert den Token."""
-    flow = InstalledAppFlow.from_client_config(_client_config(settings), SCOPES)
+    flow = InstalledAppFlow.from_client_config(_client_config(settings), LOGIN_SCOPES)
     creds = flow.run_local_server(port=0, access_type="offline", prompt="consent")
     _save(settings, creds)
     return creds
@@ -50,7 +54,12 @@ def get_credentials(settings: Settings) -> Credentials:
     path = settings.token_path
     if not path.exists():
         raise ReauthNeeded("Noch nicht eingeloggt.")
-    creds = Credentials.from_authorized_user_file(str(path), SCOPES)
+    # Mit den beim Login gewährten Rechten laden (sonst gingen sie beim Speichern nach dem Refresh verloren).
+    # Ältere Tokens haben noch kein Gmail-Recht → Kalender/Tasks laufen weiter, Gmail meldet sich.
+    granted = json.loads(path.read_text()).get("scopes") or SCOPES
+    if not set(SCOPES) <= set(granted):
+        raise ReauthNeeded("Token ohne Kalender-/Tasks-Recht.")
+    creds = Credentials.from_authorized_user_file(str(path), granted)
     if creds.valid:
         return creds
     if creds.refresh_token:
@@ -67,3 +76,7 @@ def _save(settings: Settings, creds: Credentials) -> None:
     path = settings.token_path
     path.write_text(creds.to_json())
     path.chmod(0o600)
+
+
+def has_gmail(creds: Credentials) -> bool:
+    return GMAIL_SCOPE in (creds.scopes or [])

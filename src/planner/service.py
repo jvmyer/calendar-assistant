@@ -198,7 +198,8 @@ def mail_step(
     last = get_meta(conn, "mail_last_sync")
     if not force and last and now - datetime.fromisoformat(last) < MAIL_MIN_INTERVAL:
         return None
-    from .connectors.owa import OwaAuthError, OwaClient, sync_inbox
+    from .connectors.mailbox import sync_inbox
+    from .connectors.owa import OwaAuthError, OwaClient
     from .llm import OllamaClient
 
     try:   # Zertifikat fehlt/defekt o. Ä.: darf den Dienst nicht stoppen
@@ -223,6 +224,52 @@ def mail_step(
     except Exception as exc:
         log.exception("Mail-Abruf fehlgeschlagen")
         changelog.log(conn, actor="system", action="sync.error", entity="source", entity_id="mail",
+                      detail={"error": f"{type(exc).__name__}: {exc}"[:300]})
+    finally:
+        client.close()
+        llm.close()
+    return None
+
+
+def gmail_step(
+    conn: sqlite3.Connection, settings: Settings, notifier: Notifier, now: datetime, *,
+    gmail_factory=None, llm_factory=None, force: bool = False,
+) -> int | None:
+    """Gmail wie HKA-Mail: stündlich, nur mit GMAIL_ENABLED=1. Fehlt das Gmail-Recht im Google-Login,
+    wird einmal gemeldet (Kalender und Tasks laufen davon unberührt weiter)."""
+    if gmail_factory is None and not settings.gmail_enabled:
+        return None
+    last = get_meta(conn, "gmail_last_sync")
+    if not force and last and now - datetime.fromisoformat(last) < MAIL_MIN_INTERVAL:
+        return None
+    from .connectors.gmail import GmailClient
+    from .connectors.mailbox import sync_inbox
+    from .google_auth import has_gmail
+    from .llm import OllamaClient
+
+    try:
+        if gmail_factory is not None:
+            client = gmail_factory()
+        else:
+            creds = get_credentials(settings)
+            if not has_gmail(creds):
+                if get_meta(conn, "gmail_scope_notified") != "1":
+                    notifier.send("✉️ Für Gmail fehlt noch das Leserecht im Google-Login. Bitte einmal "
+                                  "`planner login` ausführen und den Token aufspielen.")
+                    set_meta(conn, "gmail_scope_notified", "1")
+                return None
+            client = GmailClient(creds, query=settings.gmail_query)
+    except ReauthNeeded:
+        return None   # meldet schon der Kalender-Schritt
+    set_meta(conn, "gmail_scope_notified", "0")
+    llm = llm_factory() if llm_factory else OllamaClient(settings.ollama_url, settings.ollama_model)
+    try:
+        sync_inbox(conn, client.list_inbox(), now=now, source="gmail")
+        set_meta(conn, "gmail_last_sync", now.isoformat())
+        return process_mails(conn, client, llm, notifier, now, ask_feedback=settings.mail_feedback, source="gmail")
+    except Exception as exc:
+        log.exception("Gmail-Abruf fehlgeschlagen")
+        changelog.log(conn, actor="system", action="sync.error", entity="source", entity_id="gmail",
                       detail={"error": f"{type(exc).__name__}: {exc}"[:300]})
     finally:
         client.close()
@@ -270,6 +317,7 @@ def sync_cycle(
 
     # 1c) HKA-Mail (lokales Modell; Aufgaben automatisch, Vorschläge nur nach Bestätigung)
     mail_step(conn, settings, notifier, now)
+    gmail_step(conn, settings, notifier, now)
 
     # 2) Nach Google spiegeln (nur Differenz)
     try:

@@ -189,18 +189,22 @@ def cmd_mail_login(_args) -> int:
     return 0
 
 
-def cmd_mail_sync(_args) -> int:
+def cmd_mail_sync(args) -> int:
     """Einmal abrufen und auswerten (erster Lauf = stiller Erstimport). Zeigt keine Inhalte."""
-    from .service import LogNotifier, mail_step
+    from .service import LogNotifier, gmail_step, mail_step
 
     settings = load_settings()
     conn = connect(settings.db_path)
-    n = mail_step(conn, settings, LogNotifier(), datetime.now(UTC), force=True)
+    step = gmail_step if args.source == "gmail" else mail_step
+    n = step(conn, settings, LogNotifier(), datetime.now(UTC), force=True)
     if n is None:
-        print("Nicht abgerufen (MAIL_ENABLED fehlt, gesperrt oder Fehler – siehe `planner log`).")
+        print("Nicht abgerufen (MAIL_ENABLED/GMAIL_ENABLED fehlt, gesperrt, Login fehlt oder Fehler – "
+              "siehe `planner log`).")
         return 1
-    counts = dict(conn.execute("SELECT state, COUNT(*) FROM mails GROUP BY state").fetchall())
-    verdicts = dict(conn.execute("SELECT verdict, COUNT(*) FROM mails WHERE verdict IS NOT NULL GROUP BY verdict"))
+    counts = dict(conn.execute("SELECT state, COUNT(*) FROM mails WHERE source = ? GROUP BY state",
+                               (args.source,)).fetchall())
+    verdicts = dict(conn.execute("SELECT verdict, COUNT(*) FROM mails WHERE verdict IS NOT NULL AND source = ? "
+                                 "GROUP BY verdict", (args.source,)).fetchall())
     print(f"{n} Mails ausgewertet · gespeichert: {counts} · Urteile: {verdicts}")
     return 0
 
@@ -210,7 +214,9 @@ def cmd_mail_review(args) -> int:
 
     Trägt nichts ein. Im Terminal erscheinen nur Zahlen (keine Betreffs/Inhalte).
     """
+    from .connectors.gmail import GmailClient
     from .connectors.owa import OwaAuthError, OwaClient
+    from .google_auth import has_gmail
     from .llm import OllamaClient
     from .mail_flow import format_review, review
 
@@ -218,8 +224,15 @@ def cmd_mail_review(args) -> int:
     if not settings.telegram_enabled:
         print("Telegram ist nicht eingerichtet – das Ergebnis würde nirgends ankommen.")
         return 1
-    client = OwaClient(settings.hka_user, settings.hka_password, settings.owa_cert_path, settings.owa_key_path,
-                       settings.owa_session_path)
+    if args.source == "gmail":
+        creds = get_credentials(settings)
+        if not has_gmail(creds):
+            print("Im Google-Login fehlt das Gmail-Leserecht – bitte `planner login` und Token aufspielen.")
+            return 1
+        client = GmailClient(creds, query=settings.gmail_query)
+    else:
+        client = OwaClient(settings.hka_user, settings.hka_password, settings.owa_cert_path, settings.owa_key_path,
+                           settings.owa_session_path)
     llm = OllamaClient(settings.ollama_url, settings.ollama_model)
     try:
         headers = client.list_inbox(limit=args.n)
@@ -549,12 +562,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("ilias-sync", help="ILIAS-Neuigkeiten jetzt abrufen").set_defaults(fn=cmd_ilias_sync)
     sub.add_parser("mail-login", help="HKA-Mail-Login prüfen (1 Versuch) und Sperre aufheben").set_defaults(
         fn=cmd_mail_login)
-    sub.add_parser("mail-sync", help="HKA-Mails jetzt abrufen und auswerten").set_defaults(fn=cmd_mail_sync)
+    p_ms = sub.add_parser("mail-sync", help="Mails jetzt abrufen und auswerten (erster Lauf: still)")
+    p_ms.add_argument("--source", choices=["hka", "gmail"], default="hka")
+    p_ms.set_defaults(fn=cmd_mail_sync)
     p_vt = sub.add_parser("voice-test", help="Audiodatei transkribieren + verstehen (speichert nichts)")
     p_vt.add_argument("file")
     p_vt.set_defaults(fn=cmd_voice_test)
     p_rev = sub.add_parser("mail-review", help="Probelauf: letzte Mails bewerten, Liste per Telegram (trägt nichts ein)")
     p_rev.add_argument("-n", type=int, default=10)
+    p_rev.add_argument("--source", choices=["hka", "gmail"], default="hka")
     p_rev.set_defaults(fn=cmd_mail_review)
     p_news = sub.add_parser("ilias-news", help="Gespeicherte ILIAS-Neuigkeiten anzeigen")
     p_news.add_argument("--days", type=int, default=14)

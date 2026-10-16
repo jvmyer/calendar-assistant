@@ -13,33 +13,23 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import ssl
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
 
 from ..rules import TZ
+from .mailbox import MailHeader
 
 BASE = "https://owa-cert.h-ka.de"
 HOST = "owa-cert.h-ka.de"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-MAX_AGE_DAYS = 14   # ältere Mails nie als „neu“ behandeln
 
 
 class OwaAuthError(Exception):
     """Login fehlgeschlagen oder nicht möglich – nicht automatisch wiederholen."""
-
-
-@dataclass(frozen=True)
-class MailHeader:
-    item_id: str
-    received: datetime
-    sender: str
-    subject: str
 
 
 def _is_logon(resp: httpx.Response) -> bool:
@@ -171,35 +161,3 @@ def parse_header(item: dict) -> MailHeader:
         sender=sender,
         subject=item.get("Subject") or "",
     )
-
-
-# -- Neue Mails erkennen ---------------------------------------------------------------------------
-@dataclass
-class InboxSyncResult:
-    initial: bool = False
-    stored: int = 0
-    new: int = 0
-
-
-def sync_inbox(conn: sqlite3.Connection, headers: list[MailHeader], *, now: datetime) -> InboxSyncResult:
-    """Speichert Kopfdaten (keine Inhalte); der erste Lauf ist ein stiller Erstimport (alles „seen“)."""
-    from .. import changelog
-    from ..db import get_meta, set_meta
-
-    result = InboxSyncResult(initial=get_meta(conn, "mail_baselined") != "1")
-    known = {r[0] for r in conn.execute("SELECT item_id FROM mails")}
-    cutoff = now - timedelta(days=MAX_AGE_DAYS)
-    stamp = changelog.now_iso()
-    for h in sorted(headers, key=lambda m: m.received):
-        if h.item_id in known:
-            continue
-        fresh = not result.initial and h.received >= cutoff
-        conn.execute(
-            "INSERT INTO mails(item_id, received, sender, subject, first_seen, state) VALUES (?,?,?,?,?,?)",
-            (h.item_id, h.received.isoformat(), h.sender, h.subject, stamp, "new" if fresh else "seen"))
-        result.stored += 1
-        result.new += fresh
-    conn.commit()
-    if result.initial:
-        set_meta(conn, "mail_baselined", "1")
-    return result
