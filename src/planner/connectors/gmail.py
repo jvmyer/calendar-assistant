@@ -17,7 +17,7 @@ from googleapiclient.discovery import build
 from ..rules import TZ
 from .mailbox import MailHeader
 
-DEFAULT_QUERY = "in:inbox category:primary"
+DEFAULT_QUERY = "in:inbox -category:promotions -category:social -category:updates -category:forums"
 
 
 def _header(headers: list[dict], name: str) -> str:

@@ -99,7 +99,7 @@ def test_gmail_client_lists_primary_inbox_and_reads_body():
 
     client = GmailClient(None, service=Root())
     [h] = client.list_inbox()
-    assert h.subject == "Folien" and svc.queries == ["in:inbox category:primary"]
+    assert h.subject == "Folien" and svc.queries == ["in:inbox -category:promotions -category:social -category:updates -category:forums"]
     assert client.get_body("m1") == "Kannst du die Folien bis Sonntag schicken?"
 
 
