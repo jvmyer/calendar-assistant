@@ -44,9 +44,21 @@ def test_resolve_phrase_empty_or_past():
 
 # -- Modell-Antwort ---------------------------------------------------------------------------------
 def test_parse_verdict():
-    v = parse_verdict('{"kind": "Aufgabe", "title": " Folien ", "deadline_text": "bis Sonntag", "effort_min": 90}')
+    v = parse_verdict('{"handlung": "Folien schicken", "pflicht": true, "kind": "Aufgabe", "title": " Folien ", '
+                      '"deadline_text": "bis Sonntag", "effort_min": 90}')
     assert v == MailVerdict("aufgabe", "Folien", "bis Sonntag", 90)
     assert parse_verdict('{"kind": "nichts", "title": "", "deadline_text": "", "effort_min": 0}').effort_min is None
+
+
+@pytest.mark.parametrize(("handlung", "pflicht", "kind"), [
+    ("", True, "nichts"),                       # nichts zu tun → keine Aufgabe, egal was das Modell meint
+    ("Vortrag besuchen", False, "vorschlag"),   # ohne Pflicht höchstens ein Vorschlag (mit Bestätigung)
+    ("Formular hochladen", True, "aufgabe"),
+])
+def test_parse_verdict_task_needs_action_and_obligation(handlung, pflicht, kind):
+    raw = json.dumps({"handlung": handlung, "pflicht": pflicht, "kind": "aufgabe", "title": "x",
+                      "deadline_text": "", "effort_min": 10, "priority": "mittel"})
+    assert parse_verdict(raw).kind == kind
 
 
 @pytest.mark.parametrize("raw", ["kein json", '{"title": "x"}', '{"kind": "vielleicht"}'])
@@ -379,7 +391,7 @@ def test_feedback_becomes_examples_for_the_model_same_sender_first(conn):
     exs = feedback.examples(conn, "Prüfungsamt")
     assert [e.subject for e in exs] == ["Prüfungsanmeldung", "Folien"]
     assert exs[0].answer["priority"] == "hoch" and exs[1].answer == {
-        "kind": "nichts", "title": "", "deadline_text": "", "effort_min": 0, "priority": "hoch"}
+        "handlung": "", "pflicht": False, "kind": "nichts", "title": "", "deadline_text": "", "effort_min": 0, "priority": "hoch"}
     msgs = feedback.example_messages(exs)
     assert msgs[-2]["content"].startswith("Von: Prüfungsamt\nBetreff: Prüfungsanmeldung")   # direkt vor der neuen Mail
     # und sie kommen beim nächsten Lauf beim Modell an
@@ -403,7 +415,8 @@ def test_ollama_receives_examples_between_system_and_mail():
     def handler(request):
         seen["messages"] = json.loads(request.content)["messages"]
         return httpx.Response(200, json={"message": {"content": json.dumps(
-            {"kind": "aufgabe", "title": "x", "deadline_text": "", "effort_min": 5, "priority": "hoch"})}})
+            {"handlung": "x tun", "pflicht": True, "kind": "aufgabe", "title": "x", "deadline_text": "",
+             "effort_min": 5, "priority": "hoch"})}})
 
     client = OllamaClient("http://127.0.0.1:11434", "m", client=httpx.Client(transport=httpx.MockTransport(handler)))
     ex = [{"role": "user", "content": "Von: A"}, {"role": "assistant", "content": "{}"}]

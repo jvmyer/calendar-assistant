@@ -212,7 +212,9 @@ def _answer(f: sqlite3.Row) -> dict:
             if f["user_deadline"] else ""
     else:
         dl = f["model_deadline_text"] or ""
-    return {
+    return {   # gleiche Reihenfolge wie llm.SCHEMA
+        "handlung": f["model_title"] if kind != "nichts" else "",
+        "pflicht": kind == "aufgabe",
         "kind": kind,
         "title": f["model_title"] if kind != "nichts" else "",
         "deadline_text": dl if kind != "nichts" else "",

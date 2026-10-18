@@ -23,30 +23,38 @@ MAX_BODY = 3000   # Zeichen; längere Mails werden gekürzt (Kontext des kleinen
 OPTIONS = {"temperature": 0, "num_ctx": 4096, "num_gpu": 0}
 WEEKDAYS_DE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
-SYSTEM = """Du liest E-Mails eines Studenten (Jonah) und entscheidest, ob daraus etwas für seinen Kalender folgt.
+SYSTEM = """Du liest E-Mails eines Studenten (Jonah) und entscheidest, ob daraus eine Aufgabe für seinen Kalender folgt.
 Heute ist {today}.
+Die meisten Mails sind KEINE Aufgabe. Eine Aufgabe ist nur, was Jonah selbst aktiv erledigen muss.
+Beantworte die Felder der Reihe nach:
+handlung: Was genau muss Jonah SELBST tun? Ein konkreter Schritt mit Verb (z. B. "Formular ausfüllen und hochladen", "Lisa die Folien schicken", "Semesterbeitrag überweisen"). Leer lassen, wenn es nichts zu tun gibt außer lesen, zur Kenntnis nehmen, sich etwas merken oder ggf. hingehen.
+pflicht: true nur, wenn Jonah Nachteile hat, falls er es nicht tut (Frist verpasst, Prüfung, Geld, Exmatrikulation, jemand wartet persönlich auf seine Antwort). Sonst false.
 kind:
-- "aufgabe": Jemand verlangt etwas von Jonah, mit Frist oder Folgen (Abgabe, Antwort auf Anfrage, Pflicht-Anmeldung, Zahlung).
-- "vorschlag": freiwillige Veranstaltung oder Angebot, das ihn interessieren könnte.
-- "nichts": reine Information, Newsletter, Werbung, Bestätigung ohne To-do.
-Wichtig: Eine Pflicht (Anmeldung, Zahlung, Rückmeldung, Antwort), ohne die Jonah Nachteile hat, ist immer "aufgabe" – auch wenn sie sachlich formuliert ist. Bittet ihn jemand persönlich um eine Antwort, Rückmeldung, Terminvorschläge oder Unterlagen, ist es "aufgabe". Im Zweifel zwischen "aufgabe" und "nichts": "aufgabe".
-Ist etwas freiwillig ("kostenlos", "freiwillig", "kommt vorbei"), ist es "vorschlag", nicht "nichts".
+- "aufgabe": handlung ist nicht leer UND pflicht ist true.
+- "vorschlag": freiwillige Veranstaltung oder Angebot, das ihn interessieren könnte (Vortrag, Workshop, Party, Exkursion, Job-Angebot).
+- "nichts": alles andere.
+Immer "nichts" sind zum Beispiel: Rundmails mit Informationen (Raumänderung, Ausfall, neue Regeln, Öffnungszeiten, Ankündigungen), Newsletter, Werbung, Bestätigungen (Bestellung, Anmeldung, Zahlung eingegangen), Versand- und Systembenachrichtigungen, Sicherheitshinweise, Rechnungen, die automatisch abgebucht werden, Erinnerungen an Termine, die schon feststehen, und Mails, in denen andere etwas tun müssen.
+Eine Rundmail an viele ist nur dann "aufgabe", wenn darin eine Pflicht für jeden Einzelnen mit Frist steht (z. B. "Rückmeldung bis 15.01.", "Prüfungsanmeldung bis 13.11.").
+Im Zweifel: "nichts" bzw. bei Angeboten "vorschlag".
 title: kurzer Titel auf Deutsch (max. 6 Wörter), was zu tun ist; bei "nichts" leer.
 deadline_text: die Stelle aus der Mail, die die Frist nennt, WÖRTLICH kopiert (z. B. "bis Sonntagabend", "bis zum 29.01.2027", "vom 02.11. bis 13.11.2026"). Nichts umrechnen. Keine Frist → leerer Text.
 effort_min: geschätzter Aufwand in Minuten (bei "nichts" 0).
 priority: "hoch" (große Folgen bei Versäumnis, z. B. Prüfung, Zahlung, Exmatrikulation, knappe Frist), "mittel" (normale Aufgabe), "niedrig" (kann warten, kaum Folgen).
 Falls vorher Beispiele kommen: Das sind frühere Mails mit Jonahs eigener Einschätzung. Richte dich danach, besonders bei gleichen Absendern."""
 
+# Reihenfolge zählt: das Modell füllt die Felder nacheinander aus, erst Handlung/Pflicht, dann die Art.
 SCHEMA = {
     "type": "object",
     "properties": {
+        "handlung": {"type": "string"},
+        "pflicht": {"type": "boolean"},
         "kind": {"type": "string", "enum": list(KINDS)},
         "title": {"type": "string"},
         "deadline_text": {"type": "string"},
         "effort_min": {"type": "integer"},
         "priority": {"type": "string", "enum": ["hoch", "mittel", "niedrig"]},
     },
-    "required": ["kind", "title", "deadline_text", "effort_min", "priority"],
+    "required": ["handlung", "pflicht", "kind", "title", "deadline_text", "effort_min", "priority"],
 }
 
 
@@ -99,6 +107,10 @@ def parse_verdict(raw: str) -> MailVerdict:
         raise LlmError(f"Antwort unbrauchbar: {type(exc).__name__}") from exc
     if kind not in KINDS:
         raise LlmError(f"unbekannte Art: {kind[:20]}")
+    # Kleine Modelle sagen gern „aufgabe“, obwohl sie selbst keine Handlung/Pflicht sehen – dann gilt die Prüfung.
+    action = str(data.get("handlung") or "").strip()
+    if kind == "aufgabe" and not (action and data.get("pflicht") is True):
+        kind = "vorschlag" if action else "nichts"
     try:
         effort = int(data.get("effort_min") or 0)
     except (ValueError, TypeError):
