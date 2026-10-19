@@ -1,8 +1,8 @@
 # Laptop als Planer-Server einrichten
 
 Ziel: Der Laptop läuft zu Hause 24/7 als Server (Ubuntu Server 24.04 LTS, ohne Oberfläche). Du bedienst ihn
-per SSH vom Mac. Aus dem Netz von außen ist er nicht erreichbar (nur SSH im Heimnetz, Telegram läuft
-über ausgehende Verbindungen).
+per SSH vom Mac. Kein Port ist am Router nach außen geöffnet (Telegram läuft über ausgehende
+Verbindungen); Fernzugriff von unterwegs läuft stattdessen über Tailscale (Abschnitt 10).
 
 Dateien hier: `setup-server.sh` (läuft auf dem Laptop), `push.sh` (läuft auf dem Mac), `planner.service`
 (systemd-Dienst).
@@ -178,3 +178,19 @@ dann `sudo tlp start`. Ob es geht, zeigt `sudo tlp-stat -b`. Geht es nicht, ist 
   `mail-review`), `./enable-mail.sh` (Mail-Abruf einschalten).
 - Härtung: `scp deploy/harden.sh <user>@<server-ip>:~ && ssh -t <user>@<server-ip> 'sudo bash harden.sh'`
   (SSH nur mit Schlüssel, kein root, nur `<user>`; Dienst mit UMask 0077). Vorher muss der Schlüssel-Login gehen.
+
+## 10. Fernzugriff von unterwegs (Tailscale, eingerichtet 2026-10-19)
+
+Tailscale verbindet Mac und Server in einem eigenen privaten Netz (WireGuard, NAT-Traversal) – ohne
+Portfreigabe am Router. Server-Tailscale-IP: **`<tailscale-ip>`** (Name `<server>`, Konto
+88045436+jvmyer@users.noreply.github.com, `tailscale status` zeigt alle Geräte im Netz).
+
+Von unterwegs (ohne Heimnetz) einfach die Tailscale-IP statt der lokalen `<server-ip>` nehmen:
+
+```bash
+ssh <user>@<tailscale-ip>
+deploy/push.sh <user>@<tailscale-ip>
+```
+
+Voraussetzung: Tailscale läuft auf dem Mac (App in der Menüleiste, Status „Connected“) und auf dem Server
+(`systemctl status tailscaled`). Beide müssen im selben Tailscale-Konto angemeldet sein.
