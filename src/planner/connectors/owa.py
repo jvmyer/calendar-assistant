@@ -127,7 +127,8 @@ class OwaClient:
         msg = self._call("FindItem", {
             "__type": "FindItemRequest:#Exchange",
             "ItemShape": {"__type": "ItemResponseShape:#Exchange", "BaseShape": "IdOnly",
-                          "AdditionalProperties": [prop("Subject"), prop("DateTimeReceived"), prop("From")]},
+                          "AdditionalProperties": [prop("Subject"), prop("DateTimeReceived"), prop("From"),
+                                                   prop("ConversationId")]},
             "ParentFolderIds": [{"__type": "DistinguishedFolderId:#Exchange", "Id": "inbox"}],
             "Traversal": "Shallow",
             "Paging": {"__type": "IndexedPageView:#Exchange", "BasePoint": "Beginning", "Offset": 0,
@@ -160,4 +161,5 @@ def parse_header(item: dict) -> MailHeader:
         received=datetime.fromisoformat(item["DateTimeReceived"]).astimezone(TZ),
         sender=sender,
         subject=item.get("Subject") or "",
+        thread_id=(item.get("ConversationId") or {}).get("Id"),
     )

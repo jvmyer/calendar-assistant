@@ -33,7 +33,7 @@ def parse_header(msg: dict) -> MailHeader:
     headers = (msg.get("payload") or {}).get("headers") or []
     received = datetime.fromtimestamp(int(msg["internalDate"]) / 1000, tz=UTC).astimezone(TZ)
     return MailHeader(item_id=msg["id"], received=received, sender=sender_name(_header(headers, "From")),
-                      subject=_header(headers, "Subject"))
+                      subject=_header(headers, "Subject"), thread_id=msg.get("threadId"))
 
 
 def _decode(data: str) -> str:

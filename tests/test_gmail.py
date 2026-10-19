@@ -47,10 +47,10 @@ def test_body_falls_back_to_html():
 
 
 def test_header_and_sender():
-    msg = {"id": "18f", "internalDate": "1792134000000", "payload": {"headers": [
+    msg = {"id": "18f", "threadId": "t1", "internalDate": "1792134000000", "payload": {"headers": [
         {"name": "From", "value": "Lisa Müller <lisa@example.org>"}, {"name": "Subject", "value": "Folien"}]}}
     h = parse_header(msg)
-    assert (h.item_id, h.sender, h.subject) == ("18f", "Lisa Müller", "Folien")
+    assert (h.item_id, h.sender, h.subject, h.thread_id) == ("18f", "Lisa Müller", "Folien", "t1")
     assert h.received.tzinfo is not None
     assert sender_name("lisa@example.org") == "lisa@example.org"
 
@@ -124,6 +124,7 @@ def test_old_database_gets_source_column(tmp_path):
     old.close()
     conn = connect(path)
     assert conn.execute("SELECT source FROM mails").fetchone()[0] == "hka"
+    assert conn.execute("SELECT thread_id FROM mails").fetchone()[0] is None
 
 
 # -- Dienstschritt -------------------------------------------------------------------------------------------

@@ -5,7 +5,7 @@ import pytest
 from planner import proposals, tasks
 from planner.db import connect
 from planner.rules import TZ, Rules
-from test_gtasks import Collect, FakeTasks, cycle
+from test_gtasks import FakeTasks, cycle
 from test_planning import FakeCal, at
 
 
@@ -43,14 +43,14 @@ def test_pending_proposal_never_reaches_calendar_or_tasks(env):
     assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
-def test_user_is_notified_once_per_proposal(env):
+def test_pending_proposal_is_never_pushed_only_pullable(env):
+    """Vorschläge stören nicht mehr per Telegram – nur `/vorschlaege` zeigt sie."""
     conn, cal, tc, rules = env
     barcamp(conn)
-    n = Collect()
-    cycle(conn, cal, tc, rules, n)
-    cycle(conn, cal, tc, rules, n)
-    msgs = [m for m in n.msgs if "Vorschlag" in m]
-    assert len(msgs) == 1 and "KI-Barcamp" in msgs[0] and "planner accept" in msgs[0]
+    notifier = cycle(conn, cal, tc, rules)
+    cycle(conn, cal, tc, rules, notifier)
+    assert not any("Vorschlag" in m for m in notifier.msgs)
+    assert [r["title"] for r in proposals.pending(conn)] == ["KI-Barcamp"]
 
 
 def test_dedupe_by_source_ref(env):

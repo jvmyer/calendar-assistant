@@ -16,7 +16,7 @@ from contextlib import closing
 
 import httpx
 
-from .bot_logic import Buttons, handle_callback, handle_message, proposal_buttons
+from .bot_logic import Buttons, handle_callback, handle_message
 from .config import Settings
 from .db import connect
 
@@ -74,9 +74,6 @@ class TelegramNotifier:
 
     def send_with_buttons(self, text: str, buttons: Buttons) -> bool:
         return self.send(text, buttons)
-
-    def send_proposal(self, proposal_id: int, text: str) -> bool:
-        return self.send(text, proposal_buttons(proposal_id))
 
 
 def start_bot(settings: Settings, wake: threading.Event, stop: threading.Event) -> threading.Thread:

@@ -6,8 +6,11 @@ Pro neuer Mail:
 3. Frist im Code bestimmen (`deadlines.resolve_phrase`); findet sich keine, regelbasiert im ganzen Text
 4. „aufgabe“ → **automatisch Aufgabe** (mit oder ohne Frist – Aufgaben gehen nie verloren),
    Meldung mit „Verwerfen“-Button
-5. „vorschlag“ → Vorschlag; kommt nur nach Bestätigung in den Kalender (Meldung über den Planer)
+5. „vorschlag“ → Vorschlag; kommt nur nach Bestätigung in den Kalender
 6. „nichts“ → still
+
+Antworten im selben Thread (gleiche `thread_id`), der schon eine Aufgabe ausgelöst hat, werden
+nicht noch einmal ausgewertet – sonst legt jede Antwort-Mail eine weitere Aufgabe an.
 
 Idempotent wie der ILIAS-Ablauf: Fehler (OWA, Modell) → im nächsten Lauf nochmal; nach
 `MAX_ATTEMPTS` Fehlversuchen wird die Mail trotzdem gemeldet, damit nichts untergeht.
@@ -63,6 +66,16 @@ def find_deadline(verdict: MailVerdict, subject: str, body: str, *, posted: date
 
 def _title(verdict: MailVerdict, subject: str) -> str:
     return (verdict.title or subject or "Mail beantworten").strip()[:200]
+
+
+def _thread_already_has_task(conn: sqlite3.Connection, source: str, thread_id: str | None, item_id: str) -> bool:
+    """True, wenn im selben Thread schon eine andere Mail zur Aufgabe wurde – dann keine zweite."""
+    if not thread_id:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM mails WHERE source = ? AND thread_id = ? AND item_id != ? AND verdict = 'aufgabe' LIMIT 1",
+        (source, thread_id, item_id)).fetchone()
+    return row is not None
 
 
 def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: datetime) -> MailResult:
@@ -145,6 +158,10 @@ def process_mails(conn: sqlite3.Connection, client, llm, notifier, now: datetime
         conn.commit()
 
     for row in rows:
+        if _thread_already_has_task(conn, source, row["thread_id"], row["item_id"]):
+            settle(row["item_id"], "antwort")   # Antwort auf eine Mail, die schon eine Aufgabe ausgelöst hat
+            finished += 1
+            continue
         attempts = int(row["attempts"] or 0)
         try:
             res = analyse(conn, client, llm, row, now)

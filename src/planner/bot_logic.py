@@ -140,10 +140,6 @@ def proposals_reply(conn: sqlite3.Connection) -> Reply:
                  [[(f"✅ #{r['id']} ja", f"acc:{r['id']}"), (f"❌ #{r['id']} nein", f"rej:{r['id']}")] for r in rows])
 
 
-def proposal_buttons(proposal_id: int) -> Buttons:
-    return [[("✅ In den Kalender", f"acc:{proposal_id}"), ("❌ Nein danke", f"rej:{proposal_id}")]]
-
-
 def ilias_overview(conn: sqlite3.Connection, days: int = 14, limit: int = 8) -> str:
     """Neueste ILIAS-Neuigkeiten aus der lokalen Datenbank (kein Netzwerkzugriff)."""
     cutoff = (datetime.now(TZ) - timedelta(days=days)).isoformat()

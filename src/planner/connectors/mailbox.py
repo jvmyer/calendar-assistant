@@ -15,6 +15,7 @@ class MailHeader:
     received: datetime
     sender: str
     subject: str
+    thread_id: str | None = None   # Konversations-ID: Antworten im selben Thread erzeugen keine zweite Aufgabe
 
 @dataclass
 class InboxSyncResult:
@@ -39,8 +40,10 @@ def sync_inbox(conn: sqlite3.Connection, headers: list[MailHeader], *, now: date
             continue
         fresh = not result.initial and h.received >= cutoff
         conn.execute(
-            "INSERT INTO mails(item_id, source, received, sender, subject, first_seen, state) VALUES (?,?,?,?,?,?,?)",
-            (h.item_id, source, h.received.isoformat(), h.sender, h.subject, stamp, "new" if fresh else "seen"))
+            "INSERT INTO mails(item_id, source, received, sender, subject, thread_id, first_seen, state) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (h.item_id, source, h.received.isoformat(), h.sender, h.subject, h.thread_id, stamp,
+             "new" if fresh else "seen"))
         result.stored += 1
         result.new += fresh
     conn.commit()

@@ -8,7 +8,6 @@ from planner.bot_logic import handle_callback, handle_message
 from planner.db import connect
 from planner.quickadd import parse_quick
 from planner.rules import TZ
-from planner.service import _notify_proposals
 from planner.telegram_bot import TelegramNotifier, quiet_http_loggers
 
 TODAY = date(2026, 10, 13)   # Dienstag
@@ -136,15 +135,6 @@ class Resp:
         self.status_code = code
 
 
-def test_notifier_sends_proposal_with_buttons():
-    calls = []
-    n = TelegramNotifier(TOKEN, 42, post=lambda url, json, timeout: calls.append((url, json)) or Resp())
-    assert n.send_proposal(3, "💡 Vorschlag") is True
-    url, payload = calls[0]
-    assert url.endswith("/sendMessage") and payload["chat_id"] == 42
-    assert [b["callback_data"] for b in payload["reply_markup"]["inline_keyboard"][0]] == ["acc:3", "rej:3"]
-
-
 def test_notifier_truncates_long_text():
     calls = []
     n = TelegramNotifier(TOKEN, 42, post=lambda url, json, timeout: calls.append(json) or Resp())
@@ -167,31 +157,6 @@ def test_quiet_http_loggers():
     logging.getLogger("httpx").setLevel(logging.DEBUG)
     quiet_http_loggers()
     assert logging.getLogger("httpx").level == logging.WARNING
-
-
-# -- Vorschläge über den Kanal melden ----------------------------------------------------------
-class ButtonChannel:
-    def __init__(self, ok):
-        self.ok, self.sent = ok, []
-
-    def send(self, text):
-        return True
-
-    def send_proposal(self, pid, text):
-        self.sent.append(pid)
-        return self.ok
-
-
-def test_proposal_marked_notified_only_if_delivery_worked(conn):
-    pid = make_event_proposal(conn)
-    down = ButtonChannel(ok=False)
-    _notify_proposals(conn, down)
-    _notify_proposals(conn, down)
-    assert down.sent == [pid, pid]   # nicht zugestellt → beim nächsten Lauf nochmal
-    up = ButtonChannel(ok=True)
-    _notify_proposals(conn, up)
-    _notify_proposals(conn, up)
-    assert up.sent == [pid]          # zugestellt → nur einmal
 
 
 def test_change_log_records_user_actions(conn):

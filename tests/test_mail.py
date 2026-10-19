@@ -121,9 +121,11 @@ class Model:
         return self.verdicts[subject]
 
 
-def add_mail(conn, item_id, subject, sender="Lisa"):
-    conn.execute("INSERT INTO mails(item_id, received, sender, subject, first_seen, state) VALUES (?,?,?,?, 'x', 'new')",
-                 (item_id, NOW.isoformat(), sender, subject))
+def add_mail(conn, item_id, subject, sender="Lisa", thread_id=None):
+    conn.execute(
+        "INSERT INTO mails(item_id, received, sender, subject, thread_id, first_seen, state) "
+        "VALUES (?,?,?,?,?, 'x', 'new')",
+        (item_id, NOW.isoformat(), sender, subject, thread_id))
     conn.commit()
 
 
@@ -169,6 +171,31 @@ def test_model_down_retries_then_reports(conn):
     process_mails(conn, Mailbox(), model, ch, NOW)
     assert "nicht automatisch gelesen" in ch.sent[0][0] and "Wichtig" in ch.sent[0][0]
     assert conn.execute("SELECT state FROM mails").fetchone()[0] == "seen"
+
+
+def test_thread_reply_does_not_create_second_task(conn):
+    conn.execute(
+        "INSERT INTO mails(item_id, received, sender, subject, thread_id, first_seen, state, verdict) "
+        "VALUES ('orig', ?, 'Lisa', 'Abgabe', 't1', 'x', 'seen', 'aufgabe')", (NOW.isoformat(),))
+    conn.commit()
+    add_mail(conn, "reply", "Re: Abgabe", thread_id="t1")
+    model = Model({"Re: Abgabe": MailVerdict("aufgabe", "Abgabe", "", None)})
+    assert process_mails(conn, Mailbox(), model, Channel(), NOW) == 1
+    assert model.calls == 0   # Modell wird für Thread-Antworten gar nicht erst gefragt
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    assert conn.execute("SELECT state, verdict FROM mails WHERE item_id = 'reply'").fetchone()[:] == ("seen", "antwort")
+
+
+def test_mail_without_thread_match_is_processed_normally(conn):
+    conn.execute(
+        "INSERT INTO mails(item_id, received, sender, subject, thread_id, first_seen, state, verdict) "
+        "VALUES ('orig', ?, 'Lisa', 'Abgabe', 't1', 'x', 'seen', 'aufgabe')", (NOW.isoformat(),))
+    conn.commit()
+    add_mail(conn, "other", "Anderes Thema", thread_id="t2")   # anderer Thread
+    model = Model({"Anderes Thema": MailVerdict("aufgabe", "Anderes", "", None)})
+    assert process_mails(conn, Mailbox(), model, Channel(), NOW) == 1
+    assert model.calls == 1
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
 
 
 def test_failed_message_is_repeated_without_duplicate_task(conn):
@@ -231,7 +258,8 @@ def test_mail_step_hourly(conn, tmp_path):
 # -- OWA-Client (gegen nachgebauten Server) -----------------------------------------------------------
 FIND = {"Body": {"ResponseMessages": {"Items": [{"ResponseClass": "Success", "RootFolder": {"Items": [
     {"ItemId": {"Id": "AAA="}, "Subject": "Übungsblatt 3", "DateTimeReceived": "2026-10-16T07:00:00Z",
-     "From": {"Mailbox": {"Name": "Prof. Weber", "EmailAddress": "weber@example.org"}}}]}}]}}}
+     "From": {"Mailbox": {"Name": "Prof. Weber", "EmailAddress": "weber@example.org"}},
+     "ConversationId": {"Id": "conv1"}}]}}]}}}
 GET = {"Body": {"ResponseMessages": {"Items": [{"ResponseClass": "Success", "Items": [
     {"Body": {"BodyType": "Text", "Value": "Bitte bis Freitag abgeben."}}]}]}}}
 
@@ -272,7 +300,7 @@ def test_owa_login_list_and_body(tmp_path):
     server = FakeOwaServer()
     c = owa_client(tmp_path, server)
     [h] = c.list_inbox()
-    assert (h.item_id, h.sender, h.subject) == ("AAA=", "Prof. Weber", "Übungsblatt 3")
+    assert (h.item_id, h.sender, h.subject, h.thread_id) == ("AAA=", "Prof. Weber", "Übungsblatt 3", "conv1")
     assert h.received == datetime(2026, 10, 16, 9, 0, tzinfo=TZ)
     assert c.get_body("AAA=") == "Bitte bis Freitag abgeben."
     assert server.logins == 1

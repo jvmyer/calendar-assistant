@@ -42,7 +42,7 @@ MAX_LINES = 8
 
 
 class Notifier(Protocol):
-    """Meldungskanal. Optional: `send_proposal(id, text) -> bool` für Kanäle mit Buttons (Telegram)."""
+    """Meldungskanal. Optional: `send_with_buttons(text, buttons) -> bool` für Kanäle mit Buttons (Telegram)."""
 
     def send(self, text: str) -> object: ...
 
@@ -109,7 +109,8 @@ def planning_step(
     2. bestätigte Termine in den Kalender eintragen
     3. planen: Blocker setzen, wo Zeit ist (verstrichene Aufgaben gelten als erledigt)
     4. Google Tasks nachziehen: Aufgaben OHNE Zeitfenster stehen dort (Auffangnetz), mit Blocker nicht
-    5. neue Vorschläge melden (nichts davon kommt ohne Bestätigung in den Kalender)
+
+    Vorschläge werden nicht mehr aktiv gemeldet (zu viel Telegram-Rauschen) – `/vorschlaege` zeigt sie auf Nachfrage.
     """
     if tc is not None:
         _guarded(conn, "gtasks.pull", lambda: gtasks.pull_changes(conn, tc))
@@ -122,21 +123,6 @@ def planning_step(
     if tc is not None:
         _guarded(conn, "gtasks.push", lambda: gtasks.push(
             conn, tc, now=now, unplaced=report.unplaced if report else None))
-    _notify_proposals(conn, notifier)
-
-
-def _notify_proposals(conn: sqlite3.Connection, notifier: Notifier) -> None:
-    """Neue Vorschläge melden – mit Buttons, wenn der Kanal es kann. Nur als gemeldet markieren, wenn es klappte."""
-    items = proposals.unnotified_items(conn)
-    if not items:
-        return
-    if hasattr(notifier, "send_proposal"):
-        sent = [pid for pid, text in items if notifier.send_proposal(pid, text)]
-    else:
-        text, ids = proposals.take_unnotified(conn)
-        notifier.send(text)
-        sent = ids
-    proposals.mark_notified(conn, sent)
 
 
 ILIAS_MIN_INTERVAL = timedelta(minutes=30)

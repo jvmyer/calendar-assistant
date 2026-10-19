@@ -58,9 +58,10 @@ CREATE TABLE IF NOT EXISTS mails (
     received   TEXT NOT NULL,            -- ISO 8601
     sender     TEXT,
     subject    TEXT,
+    thread_id  TEXT,                     -- Konversations-/Thread-ID: Antworten im selben Thread erzeugen keine zweite Aufgabe
     first_seen TEXT NOT NULL,
     state      TEXT NOT NULL DEFAULT 'new',  -- new | seen
-    verdict    TEXT,                     -- aufgabe | vorschlag | nichts (Urteil des lokalen Modells)
+    verdict    TEXT,                     -- aufgabe | vorschlag | nichts | antwort (Urteil des lokalen Modells)
     attempts   INTEGER NOT NULL DEFAULT 0
 );
 
@@ -209,6 +210,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(mails)")}
     if "source" not in cols:
         conn.execute("ALTER TABLE mails ADD COLUMN source TEXT NOT NULL DEFAULT 'hka'")
+        conn.commit()
+    if "thread_id" not in cols:
+        conn.execute("ALTER TABLE mails ADD COLUMN thread_id TEXT")
         conn.commit()
 
 

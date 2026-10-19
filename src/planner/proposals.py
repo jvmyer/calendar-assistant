@@ -1,7 +1,8 @@
 """Vorschläge: „gut zu wissen“-Dinge (Barcamp, Helfer gesucht …), die keine Aufgabe sind.
 
-Sie werden dem Nutzer gemeldet und kommen **nur nach Bestätigung** in den Kalender
-(`accept`); sonst nie. Bestätigung läuft später über Telegram-Buttons, bis dahin per CLI.
+Sie werden NICHT aktiv gemeldet (kein Telegram-Rauschen) und kommen **nur nach Bestätigung**
+in den Kalender (`accept`); sonst nie. Der Nutzer sieht sie auf Nachfrage über `/vorschlaege`
+(Telegram-Buttons) oder die CLI (`planner proposals`/`accept`/`reject`).
 Ein bestätigter Vorschlag wird zur Aufgabe (kind=task) oder zu einem Termin im Kalender
 „Planer“ (kind=event).
 """
@@ -133,23 +134,3 @@ def describe(row: sqlite3.Row) -> str:
     return f"💡 Vorschlag #{row['id']} ({kind}): {row['title']}{when}{note}"
 
 
-def unnotified_items(conn: sqlite3.Connection) -> list[tuple[int, str]]:
-    """(ID, Text) der noch nicht gemeldeten Vorschläge."""
-    rows = conn.execute("SELECT * FROM proposals WHERE state = 'pending' AND notified = 0 ORDER BY id").fetchall()
-    return [(int(r["id"]), describe(r)) for r in rows]
-
-
-CLI_HINT = "In den Kalender? `planner accept <Nr>` · verwerfen: `planner reject <Nr>` (ohne Antwort passiert nichts)"
-
-
-def take_unnotified(conn: sqlite3.Connection) -> tuple[str | None, list[int]]:
-    """Sammelmeldung mit CLI-Hinweis für Kanäle ohne Buttons + deren IDs (danach `mark_notified`)."""
-    items = unnotified_items(conn)
-    if not items:
-        return None, []
-    return "\n".join(text for _, text in items) + "\n" + CLI_HINT, [pid for pid, _ in items]
-
-
-def mark_notified(conn: sqlite3.Connection, ids: list[int]) -> None:
-    conn.executemany("UPDATE proposals SET notified = 1 WHERE id = ?", [(i,) for i in ids])
-    conn.commit()
