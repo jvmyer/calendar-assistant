@@ -158,7 +158,7 @@ def test_gmail_step_baseline_then_task_with_gmail_label(conn, tmp_path):
     ch = Channel()
     n = gmail_step(conn, settings(tmp_path), ch, NOW.replace(hour=11), gmail_factory=lambda: second,
                    llm_factory=lambda: model)
-    assert n == 1 and ch.sent[0][0].startswith("✉️ Aus Gmail➕")
+    assert n == 1 and ch.sent[0][0].startswith("✉️ Gmail\n") and "🔴 hoch" in ch.sent[0][0]
     assert conn.execute("SELECT title, deadline FROM tasks").fetchone()[:] == ("Folien schicken", "2026-10-18")
 
 

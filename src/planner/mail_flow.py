@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 import httpx
 
 from . import feedback, proposals, tasks
-from .bot_logic import fmt_deadline
+from .bot_logic import fmt_deadline, fmt_minutes
 from .deadlines import Deadline, find_deadlines, resolve_phrase
 from .llm import LlmError, MailVerdict
 from .rules import TZ
@@ -114,10 +114,15 @@ def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: dateti
 
 
 LABELS = {"hka": "📧 Aus HKA-Mail", "gmail": "✉️ Aus Gmail"}
+SOURCE_TAGS = {"hka": "📧 HKA", "gmail": "✉️ Gmail"}
 
 
 def _label(row: sqlite3.Row) -> str:
     return LABELS.get(row["source"], "📧 Aus Mail")
+
+
+def _source_tag(row: sqlite3.Row) -> str:
+    return SOURCE_TAGS.get(row["source"], "📧 Mail")
 
 
 def build_message(row: sqlite3.Row, res: MailResult, conn: sqlite3.Connection | None = None
@@ -125,6 +130,7 @@ def build_message(row: sqlite3.Row, res: MailResult, conn: sqlite3.Connection | 
     """Nur Aufgaben werden hier gemeldet; Vorschläge meldet der Planer (mit Bestätigungs-Buttons).
 
     Mit `conn` (Einschätzung eingeschaltet): Karte mit Buttons für Art, Priorität, Aufwand und Frist.
+    Sonst (Standard) nur das Nötigste, ohne Rückfrage: Quelle, Titel, Frist, Aufwand, Priorität.
     """
     if res.task_id is None:
         return None
@@ -133,12 +139,14 @@ def build_message(row: sqlite3.Row, res: MailResult, conn: sqlite3.Connection | 
     if conn is not None:
         text, buttons = feedback.card(conn, res.task_id, header=f"{_label(row)}➕ in den Kalender übernommen")
         return f"{text}\n{source}", buttons
-    when = f"bis {fmt_deadline(res.deadline)}" if res.deadline else "ohne Frist (Frist ergänzen: /frist " \
-        f"{res.task_id} 20.10.)"
-    text = (f"{_label(row)}➕ in den Kalender übernommen\n"
-            f"• #{res.task_id} {_title(res.verdict, row['subject'])} – {when}\n"
-            f"Quelle: {row['subject']} ({row['sender']}, {posted:%d.%m.})")
-    return text, [[(f"🗑 #{res.task_id} verwerfen", f"drop:{res.task_id}")]]
+    v = res.verdict
+    when = f"bis {fmt_deadline(res.deadline)}" if res.deadline else "ohne Frist"
+    effort = fmt_minutes(v.effort_min) if v.effort_min else "?"
+    text = (f"{_source_tag(row)}\n"
+            f"{_title(v, row['subject'])}\n"
+            f"Frist: {when} · Aufwand: ~{effort} · Prio: {feedback.PRIO_ICON[v.priority]} {v.priority}\n"
+            f"{source}")
+    return text, [[("🗑 verwerfen", f"drop:{res.task_id}")]]
 
 
 def process_mails(conn: sqlite3.Connection, client, llm, notifier, now: datetime, *,

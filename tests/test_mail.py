@@ -432,9 +432,11 @@ def test_feedback_becomes_examples_for_the_model_same_sender_first(conn):
 def test_feedback_can_be_switched_off(conn):
     add_mail(conn, "a", "Abgabe")
     ch = Channel()
-    process_mails(conn, Mailbox(), Model({"Abgabe": MailVerdict("aufgabe", "Abgabe", "", None)}), ch, NOW,
-                  ask_feedback=False)
-    assert ch.sent[0][1] == [[("🗑 #1 verwerfen", "drop:1")]]
+    process_mails(conn, Mailbox(), Model({"Abgabe": MailVerdict("aufgabe", "Abgabe", "bis Sonntag", 60, "hoch")}),
+                  ch, NOW, ask_feedback=False)
+    text, buttons = ch.sent[0]
+    assert text == "📧 HKA\nAbgabe\nFrist: bis 18.10. · Aufwand: ~1 h · Prio: 🔴 hoch\nQuelle: Abgabe (Lisa, 16.10.)"
+    assert buttons == [[("🗑 verwerfen", "drop:1")]]
 
 
 def test_ollama_receives_examples_between_system_and_mail():

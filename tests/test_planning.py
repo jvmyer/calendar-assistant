@@ -149,15 +149,32 @@ def test_user_move_pins_block(env):
     assert conn.execute("SELECT pinned FROM blocks").fetchone()[0] == 1
 
 
-def test_user_delete_is_respected(env):
+def test_user_delete_drops_the_task(env):
+    """Löscht der Nutzer den (einzigen) Blocker einer Aufgabe, gilt die Aufgabe als verworfen –
+    sonst würde der nächste Lauf einfach eine neue Zeit dafür suchen (Mensch gewinnt, auch beim Löschen)."""
     conn, cal, rules = env
-    tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     run_plan(conn, cal, rules, now=NOW)
     cal.events["planner"].clear()   # Nutzer löscht den Blocker
     report = run_plan(conn, cal, rules, now=NOW)
     assert report.removed_by_user == 1
-    assert starts(cal) == [at(12, 10)]   # nicht wieder an derselben Stelle
+    assert not cal.events["planner"]   # keine neue Zeit dafür gesucht
+    assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()[0] == "dropped"
     assert conn.execute("SELECT COUNT(*) FROM blocks WHERE state='removed'").fetchone()[0] == 1
+
+
+def test_user_delete_of_one_block_keeps_task_open_if_others_remain(env):
+    """Bei auf mehrere Tage gesplitteten Aufgaben löscht ein einzelner gelöschter Block nicht die
+    ganze Aufgabe – die übrigen Sessions laufen weiter."""
+    conn, cal, rules = env
+    tid = tasks.add_task(conn, title="Projekt", source="manual", actor="user", estimate_min=300)
+    run_plan(conn, cal, rules, now=NOW)
+    assert len(cal.events["planner"]) >= 2   # auf mehrere Tage gesplittet (max. 180 Min./Tag)
+    first_eid = min(cal.events["planner"], key=lambda eid: cal.events["planner"][eid]["start"]["dateTime"])
+    del cal.events["planner"][first_eid]   # Nutzer löscht nur die erste Session
+    report = run_plan(conn, cal, rules, now=NOW)
+    assert report.removed_by_user == 1
+    assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()[0] == "open"
 
 
 def test_done_task_removes_blocks(env):

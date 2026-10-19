@@ -80,7 +80,7 @@ def test_explicit_deadline_becomes_task_automatically(conn):
     assert t["deadline"] == "2026-10-20T19:00+02:00"
     assert conn.execute("SELECT name FROM areas").fetchall()[-1]["name"] == "Verteilte Systeme"
     text, buttons = ch.sent[0]
-    assert "in den Kalender übernommen" in text and "bis 20.10. 19:00" in text
+    assert text.startswith("📚 ILIAS") and "bis 20.10. 19:00" in text
     assert buttons == [[(f"🗑 #{t['id']} verwerfen", f"drop:{t['id']}")]]
     assert conn.execute("SELECT state FROM ilias_news").fetchone()[0] == "seen"
 

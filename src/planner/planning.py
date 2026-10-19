@@ -97,7 +97,11 @@ def _collect_busy(cal, planner_id: str, rules: Rules, now: datetime, horizon_end
 
 
 def _reconcile(conn: sqlite3.Connection, events: dict[str, dict], now: datetime, report: PlanReport) -> None:
-    """Vergleicht gespeicherte Blocker mit dem Kalender: verschoben → gepinnt, gelöscht → gemerkt."""
+    """Vergleicht gespeicherte Blocker mit dem Kalender: verschoben → gepinnt, gelöscht → gemerkt.
+
+    War das der letzte aktive Block einer Aufgabe, gilt die Aufgabe als verworfen (sonst würde der
+    nächste Planungslauf einfach eine neue Zeit dafür suchen – der Mensch gewinnt, auch beim Löschen).
+    """
     rows = conn.execute(
         "SELECT * FROM blocks WHERE state = 'active' AND end > ?", (_iso(now),)
     ).fetchall()
@@ -110,6 +114,12 @@ def _reconcile(conn: sqlite3.Connection, events: dict[str, dict], now: datetime,
                           detail={"task_id": row["task_id"], "start": row["start"]},
                           reason="Im Kalender gelöscht – Zeitfenster wird nicht erneut belegt")
             report.removed_by_user += 1
+            other_active = conn.execute(
+                "SELECT 1 FROM blocks WHERE task_id = ? AND state = 'active' AND id != ?",
+                (row["task_id"], row["id"])).fetchone()
+            if other_active is None:
+                set_status(conn, row["task_id"], "dropped", actor="user",
+                           reason="Letzter Blocker der Aufgabe im Kalender gelöscht")
             continue
         raw_start, raw_end = ev.get("start", {}).get("dateTime"), ev.get("end", {}).get("dateTime")
         if not raw_start or not raw_end:   # in Ganztägiges umgewandelt: ignorieren

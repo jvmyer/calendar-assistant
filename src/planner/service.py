@@ -31,7 +31,7 @@ from .gtasks import TasksClient
 from .ilias_flow import process_news
 from .mail_flow import process_mails
 from .mirror import mirror_source
-from .planning import describe_plan, run_plan
+from .planning import run_plan
 from .rules import Rules, load_rules
 
 log = logging.getLogger("planner")
@@ -111,15 +111,16 @@ def planning_step(
     4. Google Tasks nachziehen: Aufgaben OHNE Zeitfenster stehen dort (Auffangnetz), mit Blocker nicht
 
     Vorschläge werden nicht mehr aktiv gemeldet (zu viel Telegram-Rauschen) – `/vorschlaege` zeigt sie auf Nachfrage.
+    Was der Planer dabei tut (verschoben/entfernt/neu angelegt), wird ebenfalls nicht mehr gemeldet
+    (`planner plan` zeigt es auf Nachfrage) – gemeldet wird nur noch eine neue Aufgabe selbst (mail_flow/ilias_flow)
+    sowie Warnungen, die der Nutzer wirklich braucht (Aufgabe passt nicht mehr vor die Deadline, überfällig).
     """
     if tc is not None:
         _guarded(conn, "gtasks.pull", lambda: gtasks.pull_changes(conn, tc))
     _guarded(conn, "proposals", lambda: proposals.materialize_events(conn, cal))
     report = _guarded(conn, "planner", lambda: run_plan(conn, cal, rules, now=now))
-    if report is not None:
-        msg = describe_plan(report)
-        if msg:
-            notifier.send(msg)
+    if report is not None and report.warnings:
+        notifier.send("\n".join(report.warnings))
     if tc is not None:
         _guarded(conn, "gtasks.push", lambda: gtasks.push(
             conn, tc, now=now, unplaced=report.unplaced if report else None))

@@ -26,7 +26,7 @@ class Settings:
     mail_enabled: bool = False            # HKA-Mail abrufen (MAIL_ENABLED=1)
     gmail_enabled: bool = False           # Gmail abrufen (GMAIL_ENABLED=1; braucht neuen Google-Login)
     gmail_query: str = GMAIL_QUERY
-    mail_feedback: bool = True            # unter Mail-Aufgaben nach Einschätzung fragen (MAIL_FEEDBACK=0: aus)
+    mail_feedback: bool = False            # unter Mail-Aufgaben nach Einschätzung fragen (MAIL_FEEDBACK=1: an)
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:4b"
     whisper_model: str = "small"          # tiny | base | small | medium (größer = genauer, langsamer)
@@ -89,7 +89,7 @@ def load_settings() -> Settings:
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_user_id=_int_or_none(os.environ.get("TELEGRAM_USER_ID")),
         mail_enabled=os.environ.get("MAIL_ENABLED", "").strip() == "1",
-        mail_feedback=os.environ.get("MAIL_FEEDBACK", "1").strip() != "0",
+        mail_feedback=os.environ.get("MAIL_FEEDBACK", "0").strip() == "1",
         gmail_enabled=os.environ.get("GMAIL_ENABLED", "").strip() == "1",
         gmail_query=os.environ.get("GMAIL_QUERY", "").strip() or GMAIL_QUERY,
         ollama_url=os.environ.get("OLLAMA_URL", "").strip() or "http://127.0.0.1:11434",

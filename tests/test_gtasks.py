@@ -134,7 +134,8 @@ def test_task_is_replaced_by_block_when_time_appears_and_back_when_it_vanishes(e
     cal.events["planner"].clear()                                               # Nutzer löscht den Blocker …
     no_time(cal)                                                                # … und es bleibt keine Zeit
     cycle(conn, cal, tc, rules)
-    assert tc.only()["title"] == "Bericht"                                       # Auffangnetz greift wieder
+    assert not tc.items                                                         # kein Auffangnetz – Löschen gilt
+    assert conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()[0] == "dropped"
 
 
 def test_user_checks_off_google_task(env):

@@ -169,10 +169,10 @@ def build_message(row: sqlite3.Row, res: ItemResult, course: str) -> tuple[str, 
     link = f"{BASE}goto.php/{row['obj_type']}/{row['ref_id']}"
     ilt = [("➕ Als Aufgabe anlegen", f"ilt:{row['news_id']}")]
     if res.created:
-        lines = [f"📚➕ Aus ILIAS in den Kalender übernommen{where}"]
+        lines = [f"📚 ILIAS{where}"]
         for c in res.created[:MAX_TASKS_PER_ITEM]:
             when = f"bis {fmt_deadline(c.deadline)}" if c.deadline else "ohne Frist"
-            lines.append(f"• #{c.task_id} {c.title} – {when}")
+            lines.append(f"#{c.task_id} {c.title} – {when}")
         lines.append(f"Quelle: {source}")
         if res.unresolved:
             lines.append("⚠️ „Bis zur nächsten Stunde“: kein passender Stundenplan-Termin gefunden – "
