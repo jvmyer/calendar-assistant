@@ -25,8 +25,8 @@ def test_merge_and_subtract():
 def test_free_windows_use_buffer_and_skip_sunday():
     rules = Rules(horizon_days=6)
     free = free_windows(MON_8, rules, busy=[(at(12, 10), at(12, 11))])
-    assert free[0] == (at(12, 9), at(12, 9, 50))
-    assert free[1] == (at(12, 11, 15), at(12, 19))   # 11:00 + 10 Min. Puffer, aufs 15er-Raster gerundet
+    assert free[0] == (at(12, 9), at(12, 9, 45))
+    assert free[1] == (at(12, 11, 15), at(12, 19))   # 11:00 + 15 Min. Puffer, aufs 15er-Raster gerundet
     assert all(s.weekday() != 6 for s, _ in free)   # Sonntag nicht im Standard
 
 
@@ -104,10 +104,10 @@ def test_near_equal_scores_prefer_earlier_deadline():
 
 def test_short_gaps_kept_but_only_short_tasks_use_them():
     rules = Rules(horizon_days=1)
-    # Lücke 10:00–10:45 → minus je 10 Min. Puffer = 10:10–10:35 → aufs Raster: 10:15–10:35 (20 Min.)
+    # Lücke 10:00–10:45 → minus je 15 Min. Puffer = 10:15–10:30 → aufs Raster: 10:15–10:30 (15 Min.)
     busy = [(at(12, 9), at(12, 10)), (at(12, 10, 45), at(12, 19)), (at(13, 9), at(13, 19))]
     free = free_windows(MON_8, rules, busy)
-    assert free == [(at(12, 10, 15), at(12, 10, 35))]
+    assert free == [(at(12, 10, 15), at(12, 10, 30))]
     res = schedule([TaskInput(1, "Kurz", 10), TaskInput(2, "Lang", 120)], free, rules, MON_8)
     assert [(p.task_id, p.start) for p in res.placements] == [(1, at(12, 10, 15))]
     assert res.unplaced == {2: 120}

@@ -3,7 +3,7 @@
 day_start = "09:00"                 # frühester Beginn eines Blockers
 day_end = "19:00"                   # spätestes Ende
 weekdays = ["mo", "di", "mi", "do", "fr", "sa"]
-buffer_min = 10                     # Abstand zu festen Terminen
+buffer_min = 15                     # Abstand zu festen Terminen
 min_block_min = 30                  # kleinster sinnvoller Blocker
 max_task_per_day_min = 180          # pro Aufgabe und Tag
 default_estimate_min = 60           # wenn eine Aufgabe keine Schätzung hat

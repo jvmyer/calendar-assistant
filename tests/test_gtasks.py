@@ -215,13 +215,13 @@ def test_elapsed_block_closes_the_task_without_leaving_an_all_day_task(env):
 
 def test_partly_planned_task_keeps_a_google_task_for_the_unplaced_rest(env):
     conn, cal, tc, rules = env
-    cal.busy(at(12, 10), at(12, 19))                      # heute nur 09:00–09:50 frei, danach alles belegt
+    cal.busy(at(12, 10), at(12, 19))                      # heute nur 09:00–09:45 frei, danach alles belegt
     for d in range(13, 20):
         cal.busy(at(d, 9), at(d, 19))
     tasks.add_task(conn, title="Groß", source="manual", actor="user", estimate_min=120)
     cycle(conn, cal, tc, rules)
     cycle(conn, cal, tc, rules, now=datetime(2026, 10, 12, 15, 0, tzinfo=NOW.tzinfo))   # der kleine Block ist vorbei
-    assert tc.only()["title"] == "Groß" and "70 Min. ohne freien Slot" in tc.only()["notes"]   # Rest geht nicht unter
+    assert tc.only()["title"] == "Groß" and "75 Min. ohne freien Slot" in tc.only()["notes"]   # Rest geht nicht unter
 
 
 def test_run_plan_alone_does_not_touch_tasks(env):

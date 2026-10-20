@@ -17,7 +17,7 @@ class Rules:
     day_start: time = time(9, 0)          # frühester Beginn eines Blockers
     day_end: time = time(19, 0)           # spätestes Ende
     weekdays: tuple[int, ...] = (0, 1, 2, 3, 4, 5)   # Mo–Sa
-    buffer_min: int = 10                  # Abstand zu festen Terminen
+    buffer_min: int = 15                  # Abstand zu festen Terminen
     min_block_min: int = 30               # kleinster sinnvoller Blocker
     max_task_per_day_min: int = 180       # pro Aufgabe und Tag
     default_estimate_min: int = 60        # wenn keine Schätzung vorliegt
