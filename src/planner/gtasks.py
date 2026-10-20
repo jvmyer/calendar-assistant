@@ -1,12 +1,14 @@
-"""Google Tasks: Auffangnetz für Aufgaben OHNE Zeitfenster – nichts darf untergehen.
+"""Google Tasks: zu jeder offenen Aufgabe immer eine Task – als Auffangnetz oder als Begleiter.
 
-Regel: Gibt es ein Zeitfenster, steht **nur der Blocker** (Event mit Uhrzeit, Titel „☐ …“) im Kalender –
-eine Google Task kann über die API kein Zeitfenster tragen (nur ein Datum, also immer ganztägig) und
-würde den Eintrag verdoppeln. Gibt es keine Zeit, bleibt die Task: sichtbar am Fälligkeitstag, nie
-stillschweigend weg.
+Zwei Arten (Spalte `kind` in `gtasks`):
+- **task** (Auffangnetz, ohne Zeitfenster): sichtbar am Fälligkeitstag, nie stillschweigend weg. Der
+  Mensch gewinnt: Abhaken übernimmt der Planer als erledigt, Löschen als verworfen.
+- **companion** (Begleiter, neben einem Blocker mit Zeitfenster): eine Google Task kann über die API
+  keine Uhrzeit tragen (nur ein Datum), zeigt also nicht dieselbe Zeit wie der Blocker – ist aber
+  trotzdem nützlich zum Abhaken. Abhaken/Löschen wirkt hier NICHT auf die Aufgabe zurück (Nutzer
+  2026-10-20: „nur eine Erinnerung“) – der Blocker im Kalender bleibt die alleinige Quelle für den Status.
 
-Der Mensch gewinnt: abgehakte Tasks werden im Planer als erledigt übernommen, gelöschte als verworfen.
-Titel, Notiz und Fälligkeit werden dagegen vom Planer vorgegeben (Deadline ändert man im Planer).
+Titel, Notiz und Fälligkeit werden vom Planer vorgegeben (Deadline ändert man im Planer).
 """
 
 from __future__ import annotations
@@ -118,7 +120,7 @@ def pull_changes(conn: sqlite3.Connection, tc) -> TasksReport:
         return report
     rows = conn.execute(
         "SELECT g.gtask_id, t.id, t.title FROM gtasks g JOIN tasks t ON t.id = g.task_id "
-        "WHERE t.status = 'open' AND g.tasklist_id = ?", (list_id,)
+        "WHERE t.status = 'open' AND g.tasklist_id = ? AND g.kind = 'task'", (list_id,)
     ).fetchall()
     for row in rows:
         r = remote.get(row["gtask_id"])
@@ -157,6 +159,19 @@ def _due_date(task: sqlite3.Row, remote_due: str | None, now: datetime) -> str:
     return remote_due[:10] if remote_due else now.astimezone(TZ).date().isoformat()   # nie ohne Datum
 
 
+def _companion_notes(task_id: int, blocks: list[sqlite3.Row]) -> str:
+    lines = [f"🕐 {_fmt(b['start'], b['end'])}" for b in blocks[:MAX_SHOWN_BLOCKS]]
+    if len(blocks) > MAX_SHOWN_BLOCKS:
+        lines.append(f"… und {len(blocks) - MAX_SHOWN_BLOCKS} weitere Termine")
+    lines.append("Zum Abhaken – der Blocker im Kalender bleibt die Quelle, Abhaken ändert nichts an der Planung.")
+    lines.append(f"Aufgabe #{task_id} (Planer)")
+    return "\n".join(lines)
+
+
+def _companion_due(block: sqlite3.Row) -> str:
+    return datetime.fromisoformat(block["start"]).astimezone(TZ).date().isoformat()
+
+
 def push(
     conn: sqlite3.Connection, tc, *, now: datetime | None = None, unplaced: dict[int, int] | None = None
 ) -> TasksReport:
@@ -178,32 +193,27 @@ def push(
         m = mapping.get(tid)
         remote_task = remote.get(m["gtask_id"]) if m and m["tasklist_id"] == list_id else None
         if future:
-            # Ein Blocker mit Uhrzeit steht im Kalender → keine (ganztägige) Task daneben
-            if m is not None:
-                if remote_task is not None:
-                    tc.delete(list_id, remote_task["id"])
-                conn.execute("DELETE FROM gtasks WHERE task_id = ?", (tid,))
-                conn.commit()
-                changelog.log(conn, actor="planner", action="gtask.removed", entity="task", entity_id=tid,
-                              reason="Zeitfenster gefunden – der Blocker im Kalender ersetzt die Task")
-                report.removed += 1
-            continue
-        desired = {
-            "title": t["title"],
-            "notes": _notes(tid, tid in past_tasks, unplaced.get(tid)),
-            "due": _due_date(t, (remote_task or {}).get("due"), now),
-        }
+            kind = "companion"
+            desired = {"title": t["title"], "notes": _companion_notes(tid, future), "due": _companion_due(future[0])}
+        else:
+            kind = "task"
+            desired = {
+                "title": t["title"],
+                "notes": _notes(tid, tid in past_tasks, unplaced.get(tid)),
+                "due": _due_date(t, (remote_task or {}).get("due"), now),
+            }
         body = {**desired, "due": f"{desired['due']}T00:00:00.000Z"}
         if remote_task is None:
             created = tc.insert(list_id, body)
             conn.execute(
-                "INSERT INTO gtasks(task_id, tasklist_id, gtask_id) VALUES (?, ?, ?) "
-                "ON CONFLICT(task_id) DO UPDATE SET tasklist_id = excluded.tasklist_id, gtask_id = excluded.gtask_id",
-                (tid, list_id, created["id"]),
+                "INSERT INTO gtasks(task_id, tasklist_id, gtask_id, kind) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(task_id) DO UPDATE SET tasklist_id = excluded.tasklist_id, "
+                "gtask_id = excluded.gtask_id, kind = excluded.kind",
+                (tid, list_id, created["id"], kind),
             )
             conn.commit()
             changelog.log(conn, actor="planner", action="gtask.created", entity="task", entity_id=tid,
-                          detail={"due": desired["due"]}, reason="Jede Aufgabe steht als Task im Kalender")
+                          detail={"due": desired["due"], "kind": kind}, reason="Jede Aufgabe steht als Task im Kalender")
             report.created += 1
             continue
         diff = {}
@@ -216,6 +226,9 @@ def push(
         if diff:
             tc.patch(list_id, remote_task["id"], diff)
             report.updated += 1
+        if m["kind"] != kind:
+            conn.execute("UPDATE gtasks SET kind = ? WHERE task_id = ?", (kind, tid))
+            conn.commit()
 
     # Erledigt/verworfen im Planer → in Google nachziehen
     rows = conn.execute(

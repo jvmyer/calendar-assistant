@@ -89,7 +89,7 @@ def test_accepted_task_becomes_real_task_and_gets_a_block(env):
     assert task_id is not None
     cycle(conn, cal, tc, rules)
     assert [e["summary"] for e in planner_events(cal)] == ["Anmeldung"]      # Zeit war da → Blocker
-    assert not tc.items                                                         # und keine ganztägige Task daneben
+    assert tc.only()["title"] == "Anmeldung"                                     # und eine Begleit-Task zum Abhaken
 
 
 def test_rejected_never_materializes(env):

@@ -128,7 +128,10 @@ CREATE TABLE IF NOT EXISTS proposals (
 CREATE TABLE IF NOT EXISTS gtasks (
     task_id     INTEGER PRIMARY KEY REFERENCES tasks(id),
     tasklist_id TEXT NOT NULL,
-    gtask_id    TEXT NOT NULL
+    gtask_id    TEXT NOT NULL,
+    -- task: Auffangnetz (keine Zeit) – Abhaken/Löschen wirkt auf die Aufgabe.
+    -- companion: steht neben einem Blocker, rein zum Abhaken – Abhaken/Löschen wirkt NICHT auf die Aufgabe.
+    kind        TEXT NOT NULL DEFAULT 'task'
 );
 
 -- Vom Planer eingetragene Blocker (Events im Nebenkalender „Planer“)
@@ -206,6 +209,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(ilias_news)")}
     if "attempts" not in cols:
         conn.execute("ALTER TABLE ilias_news ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(gtasks)")}
+    if "kind" not in cols:
+        conn.execute("ALTER TABLE gtasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'")
         conn.commit()
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(mails)")}
     if "source" not in cols:

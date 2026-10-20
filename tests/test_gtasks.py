@@ -64,14 +64,16 @@ def no_time(cal):
         cal.busy(at(d, 9), at(d, 19))
 
 
-def test_task_with_time_slot_gets_only_the_block_no_all_day_task(env):
-    """Google Tasks kennen keine Uhrzeit (immer ganztägig) → mit Zeitfenster steht nur der Blocker im Kalender."""
+def test_task_with_time_slot_also_gets_a_companion_task(env):
+    """Mit Zeitfenster steht der Blocker im Kalender UND eine Begleit-Task zum Abhaken daneben."""
     conn, cal, tc, rules = env
-    tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60, deadline="2026-10-20")
+    tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60, deadline="2026-10-20")
     cycle(conn, cal, tc, rules)
-    assert not tc.items
     [ev] = cal.events["planner"].values()
     assert ev["summary"] == "Bericht" and ev["start"]["dateTime"].startswith("2026-10-12T09:00")
+    google = tc.only()
+    assert google["title"] == "Bericht" and google["due"].startswith("2026-10-12")   # Datum des Blocks, nicht der Deadline
+    assert conn.execute("SELECT kind FROM gtasks WHERE task_id=?", (tid,)).fetchone()[0] == "companion"
 
 
 def test_no_time_means_task_only_and_never_lost(env):
@@ -118,18 +120,19 @@ def test_idempotent_no_duplicate_tasks(env):
     assert tc.items == snapshot
 
 
-def test_task_is_replaced_by_block_when_time_appears_and_back_when_it_vanishes(env):
+def test_task_switches_between_safety_net_and_companion_as_time_appears_and_vanishes(env):
     conn, cal, tc, rules = env
     no_time(cal)
     tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     cycle(conn, cal, tc, rules)
-    assert tc.only()["title"] == "Bericht" and not cal.events["planner"]        # keine Zeit → nur Task
+    assert tc.only()["title"] == "Bericht" and not cal.events["planner"]        # keine Zeit → nur Auffangnetz-Task
+    assert conn.execute("SELECT kind FROM gtasks WHERE task_id=?", (tid,)).fetchone()[0] == "task"
 
     cal.events["main"].clear()                                                  # Termine fallen weg → Zeit ist da
     cycle(conn, cal, tc, rules)
-    assert not tc.items and len(cal.events["planner"]) == 1                      # Blocker ersetzt die Task
-    assert conn.execute("SELECT COUNT(*) FROM gtasks WHERE task_id=?", (tid,)).fetchone()[0] == 0
-    assert conn.execute("SELECT action FROM changelog WHERE action='gtask.removed'").fetchone()
+    assert len(cal.events["planner"]) == 1                                      # Blocker kommt dazu …
+    assert tc.only()["title"] == "Bericht"                                      # … die Task bleibt, wird zum Begleiter
+    assert conn.execute("SELECT kind FROM gtasks WHERE task_id=?", (tid,)).fetchone()[0] == "companion"
 
     cal.events["planner"].clear()                                               # Nutzer löscht den Blocker …
     no_time(cal)                                                                # … und es bleibt keine Zeit
@@ -203,14 +206,30 @@ def test_local_done_completes_remote_and_drop_deletes_it(env):
     assert [t["title"] for t in tc.items.values()] == ["A"] and tc.only()["status"] == "completed"
 
 
-def test_elapsed_block_closes_the_task_without_leaving_an_all_day_task(env):
-    """Ohne Abhaken: nach dem Block ist die Aufgabe erledigt – es entsteht keine Task als „Rest“."""
+def test_elapsed_block_closes_the_task_and_completes_the_companion(env):
+    """Ohne Abhaken: nach dem Block ist die Aufgabe erledigt – die Begleit-Task wird mit abgeschlossen."""
     conn, cal, tc, rules = env
     tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     cycle(conn, cal, tc, rules)
     cycle(conn, cal, tc, rules, now=datetime(2026, 10, 12, 15, 0, tzinfo=NOW.tzinfo))
     assert conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()[0] == "done"
-    assert not tc.items
+    assert tc.only()["status"] == "completed"
+
+
+def test_checking_off_a_companion_task_does_not_complete_the_underlying_task(env):
+    """Begleit-Task ist nur eine Erinnerung – Abhaken/Löschen wirkt NICHT auf die Aufgabe zurück."""
+    conn, cal, tc, rules = env
+    tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    cycle(conn, cal, tc, rules)
+    assert conn.execute("SELECT kind FROM gtasks WHERE task_id=?", (tid,)).fetchone()[0] == "companion"
+    tc.only()["status"] = "completed"
+    cycle(conn, cal, tc, rules)
+    assert conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()[0] == "open"
+
+    tc.items.clear()                                                            # Begleit-Task gelöscht
+    cycle(conn, cal, tc, rules)
+    assert conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()[0] == "open"
+    assert tc.items                                                             # wird einfach neu angelegt
 
 
 def test_partly_planned_task_keeps_a_google_task_for_the_unplaced_rest(env):

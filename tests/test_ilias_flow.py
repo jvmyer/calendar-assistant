@@ -225,7 +225,7 @@ def test_end_to_end_into_calendar(conn):
     blocks = [e for e in cal.events["planner"].values() if e["summary"].startswith("Abgabe")]
     assert len(blocks) == 1 and datetime.fromisoformat(blocks[0]["end"]["dateTime"]) <= datetime(2026, 10, 20, 19, 0, tzinfo=TZ)
     assert "Frist: 20.10.2026 19:00" in blocks[0]["description"]
-    assert not tc.items                                    # Zeitfenster gefunden → nur der Blocker, keine ganztägige Task
+    assert tc.only()["title"].startswith("Abgabe")         # Zeitfenster gefunden → Blocker + Begleit-Task zum Abhaken
 
 
 def test_end_to_end_without_time_falls_back_to_google_task(conn):
