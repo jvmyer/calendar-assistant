@@ -150,6 +150,19 @@ def cmd_bot(args) -> int:
     return 0
 
 
+def cmd_mcp(_args) -> int:
+    """MCP-Server starten: gibt Claude enge Werkzeuge auf den echten Planer-Stand (nur Heimnetz/Tailscale)."""
+    from .mcp_server import run
+
+    settings = load_settings()
+    if not settings.mcp_token:
+        print("MCP_TOKEN fehlt in .env – ohne Token startet der Server nicht.")
+        return 1
+    print(f"MCP-Server auf {settings.mcp_host}:{settings.mcp_port} (Strg+C beendet).")
+    run(settings)
+    return 0
+
+
 def cmd_ilias_login(_args) -> int:
     """Expliziter Login (genau ein Versuch); hebt die automatische Sperre nach einem Fehlschlag auf."""
     from .connectors.ilias import IliasAuthError, IliasClient
@@ -557,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
     p_bot = sub.add_parser("bot", help="Nur den Telegram-Bot starten (ohne Google-Sync, zum Testen)")
     p_bot.add_argument("--minutes", type=int, default=0, help="nach n Minuten beenden (0 = bis Strg+C)")
     p_bot.set_defaults(fn=cmd_bot)
+    sub.add_parser("mcp", help="MCP-Server starten (Claude-Werkzeuge auf den Planer-Stand)").set_defaults(
+        fn=cmd_mcp)
     sub.add_parser("ilias-login", help="ILIAS-Login prüfen (1 Versuch) und Sperre aufheben").set_defaults(
         fn=cmd_ilias_login)
     sub.add_parser("ilias-sync", help="ILIAS-Neuigkeiten jetzt abrufen").set_defaults(fn=cmd_ilias_sync)

@@ -30,6 +30,9 @@ class Settings:
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:4b"
     whisper_model: str = "small"          # tiny | base | small | medium (größer = genauer, langsamer)
+    mcp_host: str = "127.0.0.1"           # MCP-Server bindet standardmäßig nur lokal (SSH-Tunnel nötig)
+    mcp_port: int = 8765
+    mcp_token: str = ""                   # Pflicht zum Start: Bearer-Token für den MCP-Server (MCP_TOKEN)
 
     @property
     def telegram_enabled(self) -> bool:
@@ -95,4 +98,7 @@ def load_settings() -> Settings:
         ollama_url=os.environ.get("OLLAMA_URL", "").strip() or "http://127.0.0.1:11434",
         ollama_model=os.environ.get("OLLAMA_MODEL", "").strip() or "qwen3:4b",
         whisper_model=os.environ.get("WHISPER_MODEL", "").strip() or "small",
+        mcp_host=os.environ.get("MCP_HOST", "").strip() or "127.0.0.1",
+        mcp_port=int(os.environ.get("MCP_PORT", "").strip() or 8765),
+        mcp_token=os.environ.get("MCP_TOKEN", "").strip(),
     )

@@ -194,3 +194,38 @@ deploy/push.sh <user>@<tailscale-ip>
 
 Voraussetzung: Tailscale läuft auf dem Mac (App in der Menüleiste, Status „Connected“) und auf dem Server
 (`systemctl status tailscaled`). Beide müssen im selben Tailscale-Konto angemeldet sein.
+
+## 11. Claude kann eigene Aufgaben/Termine anlegen (MCP-Server)
+
+`planner mcp` startet einen MCP-Server, der Claude (in Claude Code auf dem Mac) dieselben Werkzeuge gibt
+wie die CLI: `add_task`, `propose`, `decide_proposal`, `set_task_status`, `list_open_tasks`,
+`list_pending_proposals`, `area_tree` (Code: `src/planner/mcp_server.py`). Jeder Aufruf läuft über die
+echten Planer-Funktionen – Change-Log, Nie-verloren-Garantie und Bereichsgewichte gelten also wie
+gewohnt. Mails und Sprachnachrichten bleiben außen vor: Die Lese-Werkzeuge blenden alles mit `source`
+mail/gmail/voice aus (Datenschutzregel).
+
+**Zwei Schlösser, kein offener Port am Router:**
+1. Der Server bindet standardmäßig nur an `127.0.0.1` – erreichbar nur per SSH-Tunnel oder, wenn gesetzt,
+   direkt an die Tailscale-IP (`MCP_HOST=<tailscale-ip>` in `.env`).
+2. Jede Anfrage braucht ein Bearer-Token (`MCP_TOKEN` in `.env`, erzeugen mit `openssl rand -hex 32`).
+   Ohne Token startet der Server gar nicht.
+
+**Einrichtung (einmalig):**
+```bash
+# 1. Auf dem Server: Token erzeugen und in .env eintragen
+ssh <user>@<tailscale-ip>
+openssl rand -hex 32            # in /opt/calendar-assistant/.env als MCP_TOKEN= eintragen
+echo "MCP_HOST=<tailscale-ip>" >> /opt/calendar-assistant/.env   # direkt übers Tailnet erreichbar
+
+# 2. Code ausrollen (vom Mac)
+deploy/push.sh <user>@<tailscale-ip>
+
+# 3. Dienst einrichten (braucht sudo – selbst ausführen)
+ssh -t <user>@<tailscale-ip> 'sudo cp /opt/calendar-assistant/deploy/planner-mcp.service /etc/systemd/system/ && sudo systemctl enable --now planner-mcp'
+
+# 4. Auf dem Mac: Claude Code mit dem Server verbinden (Token = der oben erzeugte Wert)
+claude mcp add --transport http planner http://<tailscale-ip>:8765/mcp --header "Authorization: Bearer <TOKEN>"
+```
+
+Log ansehen: `ssh <user>@… 'sudo journalctl -u planner-mcp -f'`. Läuft nur im Tailnet – ohne Tailscale
+(z. B. unterwegs ohne VPN) ist der Server nicht erreichbar, genau wie SSH.

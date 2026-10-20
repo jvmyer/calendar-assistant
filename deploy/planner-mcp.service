@@ -1,0 +1,23 @@
+# systemd-Unit für den MCP-Server (gibt Claude Werkzeuge auf den Planer-Stand). Installation:
+#   sudo cp deploy/planner-mcp.service /etc/systemd/system/planner-mcp.service
+#   (Pfade/Benutzer anpassen) && sudo systemctl enable --now planner-mcp
+[Unit]
+Description=Calendar Assistant (MCP-Server für Claude)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=planner
+WorkingDirectory=/opt/calendar-assistant
+ExecStart=/opt/calendar-assistant/.venv/bin/planner mcp
+Restart=on-failure
+RestartSec=60
+# Härtung
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/calendar-assistant/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
