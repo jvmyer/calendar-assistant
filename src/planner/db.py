@@ -174,6 +174,14 @@ CREATE TABLE IF NOT EXISTS mirror (
     PRIMARY KEY (source, uid)
 );
 
+-- Aufgaben-Titel, die nie wieder automatisch angelegt werden sollen (exakter, normalisierter Treffer)
+CREATE TABLE IF NOT EXISTS blacklist (
+    id         INTEGER PRIMARY KEY,
+    title_norm TEXT NOT NULL UNIQUE,   -- klein, getrimmt, Leerraum zusammengezogen
+    title      TEXT NOT NULL,          -- Originalschreibweise, nur zur Anzeige
+    created_at TEXT NOT NULL
+);
+
 -- Append-only: Einträge werden nie geändert oder gelöscht.
 CREATE TABLE IF NOT EXISTS changelog (
     id        INTEGER PRIMARY KEY,

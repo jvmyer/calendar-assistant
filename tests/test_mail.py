@@ -198,6 +198,19 @@ def test_mail_without_thread_match_is_processed_normally(conn):
     assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
 
 
+def test_blacklisted_mail_task_creates_nothing_and_sends_no_message(conn):
+    from planner import blacklist
+
+    blacklist.add(conn, "Abgabe", actor="user")
+    add_mail(conn, "a", "Abgabe")
+    model = Model({"Abgabe": MailVerdict("aufgabe", "Abgabe", "bis Mittwoch", 30)})
+    ch = Channel()
+    assert process_mails(conn, Mailbox(), model, ch, NOW, ask_feedback=False) == 1
+    assert ch.sent == []
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    assert conn.execute("SELECT state, verdict FROM mails").fetchone()[:] == ("seen", "aufgabe")
+
+
 def test_failed_message_is_repeated_without_duplicate_task(conn):
     add_mail(conn, "a", "Abgabe")
     model = Model({"Abgabe": MailVerdict("aufgabe", "Abgabe", "bis Mittwoch", None)})
@@ -436,7 +449,7 @@ def test_feedback_can_be_switched_off(conn):
                   ch, NOW, ask_feedback=False)
     text, buttons = ch.sent[0]
     assert text == "📧 HKA\nAbgabe\nFrist: bis 18.10. · Aufwand: ~1 h · Prio: 🔴 hoch\nQuelle: Abgabe (Lisa, 16.10.)"
-    assert buttons == [[("🗑 verwerfen", "drop:1")]]
+    assert buttons == [[("🗑 verwerfen", "drop:1"), ("🚫 nie wieder", "blk:1")]]
 
 
 def test_ollama_receives_examples_between_system_and_mail():

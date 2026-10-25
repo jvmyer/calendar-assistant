@@ -95,9 +95,10 @@ def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: dateti
     if verdict.kind == "aufgabe":
         task_id = tasks.add_task(conn, title=_title(verdict, row["subject"]), source="mail", source_ref=ref,
                                  actor="mail", deadline=res.deadline, estimate_min=verdict.effort_min)
-        if task_id is None:   # schon angelegt (Meldung war fehlgeschlagen)
-            task_id = int(conn.execute("SELECT id FROM tasks WHERE source = 'mail' AND source_ref = ?",
-                                       (ref,)).fetchone()["id"])
+        if task_id is None:   # schon angelegt (Meldung war fehlgeschlagen) – oder der Titel ist gesperrt
+            existing = conn.execute("SELECT id FROM tasks WHERE source = 'mail' AND source_ref = ?",
+                                    (ref,)).fetchone()
+            task_id = int(existing["id"]) if existing else None   # Blacklist: stillschweigend nichts anlegen
         else:
             if verdict.priority != "mittel":
                 tasks.set_priority(conn, task_id, feedback.PRIO_BOOST[verdict.priority], actor="mail")
@@ -146,7 +147,7 @@ def build_message(row: sqlite3.Row, res: MailResult, conn: sqlite3.Connection | 
             f"{_title(v, row['subject'])}\n"
             f"Frist: {when} · Aufwand: ~{effort} · Prio: {feedback.PRIO_ICON[v.priority]} {v.priority}\n"
             f"{source}")
-    return text, [[("🗑 verwerfen", f"drop:{res.task_id}")]]
+    return text, [[("🗑 verwerfen", f"drop:{res.task_id}"), ("🚫 nie wieder", f"blk:{res.task_id}")]]
 
 
 def process_mails(conn: sqlite3.Connection, client, llm, notifier, now: datetime, *,

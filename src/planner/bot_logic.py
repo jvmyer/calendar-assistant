@@ -11,7 +11,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from . import areas, changelog, feedback, proposals, tasks, voice
+from . import areas, blacklist, changelog, feedback, proposals, tasks, voice
 from .quickadd import parse_quick
 from .rules import TZ
 
@@ -27,6 +27,8 @@ HELP = (
     "/erledigt <Nr> · /verwerfen <Nr>\n"
     "/frist <Nr> <Datum|keine> – z. B. /frist 3 20.10. 18:00\n"
     "/aufwand <Nr> <2h|45min>\n"
+    "/sperren <Nr> – Titel auf die Blacklist: wird nie wieder automatisch angelegt\n"
+    "/sperrliste – zeigt die Blacklist (mit Buttons zum Entfernen)\n"
     "/ilias – neueste ILIAS-Neuigkeiten\n"
     "/log [n] – letzte Änderungen\n\n"
     "🎙️ Sprachnachrichten gehen auch: ich zeige dir, was ich verstanden habe, und lege erst nach „Anlegen“ an."
@@ -65,7 +67,8 @@ def _task_line(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
 
 
 def _task_buttons(task_id: int) -> list[tuple[str, str]]:
-    return [(f"✅ #{task_id} erledigt", f"done:{task_id}"), (f"🗑 #{task_id} verwerfen", f"drop:{task_id}")]
+    return [(f"✅ #{task_id} erledigt", f"done:{task_id}"), (f"🗑 #{task_id} verwerfen", f"drop:{task_id}"),
+            (f"🚫 #{task_id} nie wieder", f"blk:{task_id}")]
 
 
 def _title(conn: sqlite3.Connection, table: str, row_id: int) -> str:
@@ -202,7 +205,7 @@ def _ilias_to_task(conn: sqlite3.Connection, news_id: str) -> Reply:
     task_id = tasks.add_task(conn, title=f"ILIAS: {row['title']}"[:200], source="ilias", actor="user",
                              source_ref=news_id)
     if task_id is None:
-        return Reply("Dazu gibt es schon eine Aufgabe.")
+        return Reply("Dazu gibt es schon eine Aufgabe – oder der Titel ist gesperrt (Blacklist).")
     return Reply(f"✅ Aufgabe #{task_id} angelegt: ILIAS: {row['title']}\n"
                  f"Frist ergänzen: /frist {task_id} 20.10.  ·  Aufwand: /aufwand {task_id} 2h",
                  [_task_buttons(task_id)], changed=True)
@@ -217,6 +220,31 @@ def _set_status(conn: sqlite3.Connection, arg: str, status: str) -> Reply:
         return Reply("Welche Aufgabe? Beispiel: /erledigt 3")
     verb = "erledigt ✅" if status == "done" else "verworfen 🗑"
     return Reply(f"#{task_id} „{title}“ {verb}.", changed=True)
+
+
+def _blacklist_task(conn: sqlite3.Connection, arg: str) -> Reply:
+    """Setzt den Titel der Aufgabe dauerhaft auf die Blacklist und verwirft die aktuelle Instanz."""
+    try:
+        task_id = int(arg.lstrip("#"))
+        row = conn.execute("SELECT title FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        title = row["title"]
+        tasks.set_status(conn, task_id, "dropped", actor="user", reason="Auf Blacklist gesetzt")
+    except (ValueError, KeyError):
+        return Reply("Welche Aufgabe? Beispiel: /sperren 3")
+    note = ("stand schon auf der Blacklist" if blacklist.add(conn, title, actor="user") is None
+            else "auf die Blacklist gesetzt – wird nie wieder automatisch angelegt")
+    return Reply(f"🚫 „{title}“ {note}. #{task_id} verworfen.\nMit /sperrliste siehst du alle Einträge.",
+                 changed=True)
+
+
+def blacklist_reply(conn: sqlite3.Connection) -> Reply:
+    rows = blacklist.list_all(conn)
+    if not rows:
+        return Reply("Die Blacklist ist leer.")
+    text = "🚫 Blacklist:\n" + "\n".join(f"#{r['id']} „{r['title']}“" for r in rows)
+    return Reply(text, [[(f"🗑 #{r['id']} entfernen", f"unblk:{r['id']}")] for r in rows])
 
 
 # -- Einstiegspunkte ----------------------------------------------------------------------
@@ -248,6 +276,10 @@ def handle_message(
             return _set_status(conn, arg, "done")
         if cmd == "/verwerfen":
             return _set_status(conn, arg, "dropped")
+        if cmd == "/sperren":
+            return _blacklist_task(conn, arg)
+        if cmd in {"/sperrliste", "/blacklist"}:
+            return blacklist_reply(conn)
         return Reply("Das Kommando kenne ich nicht.\n\n" + HELP)
     waiting = feedback.awaiting(conn)   # Antwort auf „✏️ Frist ändern“?
     if waiting is not None:
@@ -270,7 +302,7 @@ def quick_add(
         conn, title=q.title, source="telegram", actor="user", area_id=area_id, deadline=q.deadline,
         estimate_min=q.estimate_min, source_ref=f"msg:{message_id}" if message_id else None)
     if task_id is None:
-        return Reply("Diese Nachricht hatte ich schon als Aufgabe angelegt.")
+        return Reply("Diese Nachricht hatte ich schon als Aufgabe angelegt – oder der Titel ist gesperrt (Blacklist).")
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Reply(f"✅ Aufgabe angelegt:\n{_task_line(conn, row)}\nIch plane sie ein.",
                  [_task_buttons(task_id)], changed=True)
@@ -299,8 +331,11 @@ def handle_callback(conn: sqlite3.Connection, data: str) -> Reply:
         return Reply("Unbekannte Aktion.")
     try:
         if action == "acc":
-            title = _title(conn, "proposals", item_id)
+            prop = conn.execute("SELECT title, kind FROM proposals WHERE id = ?", (item_id,)).fetchone()
+            title = prop["title"] if prop else _title(conn, "proposals", item_id)
             task_id = proposals.accept(conn, item_id, actor="user")
+            if prop is not None and prop["kind"] == "task" and task_id is None:
+                return Reply(f"🚫 „{title}“ nicht angelegt – der Titel ist gesperrt (Blacklist).", changed=True)
             what = f"als Aufgabe #{task_id} übernommen" if task_id else "wird in den Kalender eingetragen"
             return Reply(f"✅ „{title}“ {what}.", changed=True)
         if action == "rej":
@@ -309,6 +344,11 @@ def handle_callback(conn: sqlite3.Connection, data: str) -> Reply:
             return Reply(f"❌ „{title}“ verworfen – es landet nichts im Kalender.")
         if action in {"done", "drop"}:
             return _set_status(conn, str(item_id), "done" if action == "done" else "dropped")
+        if action == "blk":
+            return _blacklist_task(conn, str(item_id))
+        if action == "unblk":
+            title = blacklist.remove(conn, item_id, actor="user")
+            return Reply(f"✅ „{title}“ von der Blacklist entfernt.")
     except KeyError:
         return Reply("Das gibt es nicht mehr.")
     except ValueError as exc:

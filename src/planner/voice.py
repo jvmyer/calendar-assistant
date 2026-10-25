@@ -127,7 +127,7 @@ def decide(conn: sqlite3.Connection, note_id: int, accept: bool) -> tuple[str, B
     task_id = tasks.add_task(conn, title=n["title"], source="voice", source_ref=f"voice:{note_id}", actor="user",
                              area_id=area_id, deadline=n["deadline"], estimate_min=n["estimate_min"])
     if task_id is None:
-        return "Dazu gibt es schon eine Aufgabe.", [], False
+        return "Dazu gibt es schon eine Aufgabe – oder der Titel ist gesperrt (Blacklist).", [], False
     if n["priority"] != "mittel":
         tasks.set_priority(conn, task_id, PRIO_BOOST[n["priority"]], actor="user")
     text, _ = preview(conn, note_id)

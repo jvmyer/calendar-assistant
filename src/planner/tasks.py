@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from . import changelog
+from . import blacklist, changelog
 from .changelog import now_iso
 
 
@@ -19,7 +19,10 @@ def add_task(
     deadline: str | None = None,
     estimate_min: int | None = None,
 ) -> int | None:
-    """Legt eine Aufgabe an. Gibt None zurück, wenn (source, source_ref) schon existiert."""
+    """Legt eine Aufgabe an. Gibt None zurück, wenn (source, source_ref) schon existiert
+    oder der Titel auf der Blacklist steht (siehe `blacklist.py`)."""
+    if blacklist.is_blacklisted(conn, title):
+        return None
     ts = now_iso()
     try:
         cur = conn.execute(

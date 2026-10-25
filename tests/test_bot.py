@@ -3,7 +3,7 @@ from datetime import date, datetime
 
 import pytest
 
-from planner import changelog, proposals, tasks
+from planner import blacklist, changelog, proposals, tasks
 from planner.bot_logic import handle_callback, handle_message
 from planner.db import connect
 from planner.quickadd import parse_quick
@@ -46,7 +46,7 @@ def test_text_creates_task_via_telegram_source(conn):
     assert (row["title"], row["source"], row["deadline"], row["estimate_min"]) == (
         "Bericht schreiben", "telegram", "2026-10-20", 120)
     assert r.changed and "Aufgabe angelegt" in r.text and "bis 20.10." in r.text and "2 h" in r.text
-    assert [b[1] for b in r.buttons[0]] == [f"done:{row['id']}", f"drop:{row['id']}"]
+    assert [b[1] for b in r.buttons[0]] == [f"done:{row['id']}", f"drop:{row['id']}", f"blk:{row['id']}"]
     log = conn.execute("SELECT actor FROM changelog WHERE action='task.created'").fetchone()
     assert log["actor"] == "user"
 
@@ -127,6 +127,61 @@ def test_task_buttons_and_garbage(conn):
     assert handle_callback(conn, "quatsch").text == "Unbekannte Aktion."
     assert handle_callback(conn, "acc:999").text == "Das gibt es nicht mehr."
     assert handle_callback(conn, "boom:1").text == "Unbekannte Aktion."
+
+
+def test_accept_blacklisted_task_proposal_does_not_create_task(conn):
+    blacklist.add(conn, "Anmeldung", actor="user")
+    p = proposals.add_proposal(conn, title="Anmeldung", kind="task", source="mail", actor="system", source_ref="a")
+    r = handle_callback(conn, f"acc:{p}")
+    assert "nicht angelegt" in r.text and "gesperrt" in r.text and r.changed
+    assert tasks.open_tasks(conn) == []
+
+
+# -- Blacklist --------------------------------------------------------------------------------
+def test_blacklist_button_drops_task_and_blocks_future_ones(conn):
+    tid = tasks.add_task(conn, title="Sportkurs Anmeldung", source="manual", actor="user")
+    r = handle_callback(conn, f"blk:{tid}")
+    assert "auf die Blacklist gesetzt" in r.text and "verworfen" in r.text and r.changed
+    assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()["status"] == "dropped"
+    assert tasks.add_task(conn, title="Sportkurs Anmeldung", source="manual", actor="user") is None
+
+
+def test_blacklist_command_same_as_button(conn):
+    tid = tasks.add_task(conn, title="X", source="manual", actor="user")
+    r = handle_message(conn, f"/sperren {tid}")
+    assert "auf die Blacklist gesetzt" in r.text and r.changed
+    assert "Welche Aufgabe" in handle_message(conn, "/sperren abc").text
+    assert "Welche Aufgabe" in handle_message(conn, "/sperren 999").text
+
+
+def test_blacklisting_same_title_twice_says_so(conn):
+    blacklist.add(conn, "X", actor="user")
+    tid = tasks.add_task(conn, title="X", source="manual", actor="user", source_ref="trotzdem")
+    assert tid is None   # Titel schon gesperrt, Aufgabe gar nicht erst angelegt
+    # Trick: Status direkt setzen, um den „schon gesperrt“-Zweig über die Aufgabe selbst zu erreichen
+    conn.execute("INSERT INTO tasks(title, source, deadline, estimate_min, created_at, updated_at) "
+                "VALUES ('X','manual',NULL,NULL,'t','t')")
+    conn.commit()
+    tid2 = conn.execute("SELECT id FROM tasks").fetchone()["id"]
+    r = handle_callback(conn, f"blk:{tid2}")
+    assert "stand schon auf der Blacklist" in r.text
+
+
+def test_blacklist_list_and_remove(conn):
+    assert handle_message(conn, "/sperrliste").text == "Die Blacklist ist leer."
+    tid = tasks.add_task(conn, title="Sportkurs Anmeldung", source="manual", actor="user")
+    handle_callback(conn, f"blk:{tid}")
+    r = handle_message(conn, "/sperrliste")
+    assert "Sportkurs Anmeldung" in r.text and r.buttons
+    bid = int(r.buttons[0][0][1].split(":")[1])
+    r2 = handle_callback(conn, f"unblk:{bid}")
+    assert "entfernt" in r2.text
+    assert handle_message(conn, "/sperrliste").text == "Die Blacklist ist leer."
+    assert tasks.add_task(conn, title="Sportkurs Anmeldung", source="manual", actor="user") is not None
+
+
+def test_unblock_unknown_id(conn):
+    assert handle_callback(conn, "unblk:999").text == "Das gibt es nicht mehr."
 
 
 # -- Notifier ----------------------------------------------------------------------------------

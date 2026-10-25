@@ -123,13 +123,14 @@ def _resolve(conn: sqlite3.Connection, found: list[Deadline], course: str, poste
 
 
 def _ensure_task(conn: sqlite3.Connection, *, title: str, deadline: str | None, area_id: int | None,
-                 ref: str) -> Created:
+                 ref: str) -> Created | None:
+    """None, wenn der Titel auf der Blacklist steht – dann wird stillschweigend nichts angelegt."""
     task_id = tasks.add_task(conn, title=title, source="ilias", source_ref=ref, actor="ilias",
                              area_id=area_id, deadline=deadline)
     if task_id is not None:
         return Created(task_id, title, deadline, True)
     row = conn.execute("SELECT id FROM tasks WHERE source = 'ilias' AND source_ref = ?", (ref,)).fetchone()
-    return Created(int(row["id"]), title, deadline, False)
+    return Created(int(row["id"]), title, deadline, False) if row else None
 
 
 def analyse(conn: sqlite3.Connection, client, row: sqlite3.Row, now: datetime) -> tuple[ItemResult, str]:
@@ -151,13 +152,17 @@ def analyse(conn: sqlite3.Connection, client, row: sqlite3.Row, now: datetime) -
     area_id = areas.ensure_path(conn, f"Uni/{course.replace('/', '-')}", actor="ilias") if course else None
 
     for i, d in enumerate(future[:MAX_TASKS_PER_ITEM]):
-        result.created.append(_ensure_task(
+        created = _ensure_task(
             conn, title=task_title(d.label, row["title"], course), deadline=_deadline_string(d),
-            area_id=area_id, ref=f"{row['news_id']}:{i}"))
+            area_id=area_id, ref=f"{row['news_id']}:{i}")
+        if created is not None:
+            result.created.append(created)
     for j, d in enumerate(unresolved[:1]):   # Frist nicht auflösbar: Aufgabe trotzdem anlegen (nie verlieren)
-        result.created.append(_ensure_task(
+        created = _ensure_task(
             conn, title=task_title(d.label, row["title"], course), deadline=None, area_id=area_id,
-            ref=f"{row['news_id']}:r{j}"))
+            ref=f"{row['news_id']}:r{j}")
+        if created is not None:
+            result.created.append(created)
     return result, course
 
 
@@ -182,7 +187,9 @@ def build_message(row: sqlite3.Row, res: ItemResult, course: str) -> tuple[str, 
         if res.uncertain:
             lines.append(f"ℹ️ {len(res.uncertain)} Datum/Daten ohne Jahr, weit in der Zukunft – nicht eingetragen.")
         lines.append(link)
-        return "\n".join(lines), [[(f"🗑 #{c.task_id} verwerfen", f"drop:{c.task_id}")] for c in res.created[:4]]
+        buttons = [[(f"🗑 #{c.task_id} verwerfen", f"drop:{c.task_id}"), (f"🚫 #{c.task_id} nie wieder", f"blk:{c.task_id}")]
+                  for c in res.created[:4]]
+        return "\n".join(lines), buttons
     if res.uncertain:
         d = res.uncertain[0]
         text = (f"⚠️ ILIAS{where}: „{row['title']}“ nennt Daten ohne Jahr, weit in der Zukunft "

@@ -81,7 +81,19 @@ def test_explicit_deadline_becomes_task_automatically(conn):
     assert conn.execute("SELECT name FROM areas").fetchall()[-1]["name"] == "Verteilte Systeme"
     text, buttons = ch.sent[0]
     assert text.startswith("📚 ILIAS") and "bis 20.10. 19:00" in text
-    assert buttons == [[(f"🗑 #{t['id']} verwerfen", f"drop:{t['id']}")]]
+    assert buttons == [[(f"🗑 #{t['id']} verwerfen", f"drop:{t['id']}"), (f"🚫 #{t['id']} nie wieder", f"blk:{t['id']}")]]
+    assert conn.execute("SELECT state FROM ilias_news").fetchone()[0] == "seen"
+
+
+def test_blacklisted_ilias_task_creates_nothing_without_crashing(conn):
+    from planner import blacklist
+
+    blacklist.add(conn, "Abgabe: Blatt 3 (Verteilte Systeme)", actor="user")
+    add_news(conn, "1", "Blatt 3.txt", ref="100")
+    client = Client({"100": txt("Aufgabe 3: Lösung als PDF.\nAbgabe bis spätestens 20.10. 19 Uhr in ILIAS.")})
+    ch = Channel()
+    assert process_news(conn, client, ch, NOW) == 1
+    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
     assert conn.execute("SELECT state FROM ilias_news").fetchone()[0] == "seen"
 
 

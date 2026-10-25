@@ -366,6 +366,9 @@ def cmd_add(args) -> int:
     area_id = areas.ensure_path(conn, args.area, actor="user") if args.area else None
     task_id = tasks.add_task(conn, title=args.title, source="manual", actor="user", area_id=area_id,
                              deadline=deadline, estimate_min=estimate)
+    if task_id is None:
+        print("Aufgabe nicht angelegt: Titel existiert schon oder ist gesperrt (Blacklist).")
+        return 1
     if args.boost != 1.0:
         conn.execute("UPDATE tasks SET priority_boost = ? WHERE id = ?", (args.boost, task_id))
         conn.commit()
@@ -397,6 +400,33 @@ def cmd_set_status(args) -> int:
         print(f"Aufgabe #{args.id} gibt es nicht.")
         return 1
     print(f"Aufgabe #{args.id}: {args.status}. Die Blocker verschwinden beim nächsten Planungslauf.")
+    return 0
+
+
+def cmd_blacklist(args) -> int:
+    from . import blacklist
+
+    conn = connect(load_settings().db_path)
+    if args.bl_cmd == "add":
+        bid = blacklist.add(conn, args.title, actor="user")
+        if bid is None:
+            print("Der Titel steht schon auf der Blacklist.")
+            return 1
+        print(f"#{bid} „{args.title}“ gesperrt – wird nie wieder automatisch angelegt.")
+        return 0
+    if args.bl_cmd == "remove":
+        try:
+            title = blacklist.remove(conn, args.id, actor="user")
+        except KeyError:
+            print(f"Blacklist-Eintrag #{args.id} gibt es nicht.")
+            return 1
+        print(f"„{title}“ von der Blacklist entfernt.")
+        return 0
+    rows = blacklist.list_all(conn)
+    if not rows:
+        print("Die Blacklist ist leer.")
+    for r in rows:
+        print(f"#{r['id']:<4} {r['title']}")
     return 0
 
 
@@ -527,6 +557,14 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=text)
         p.add_argument("id", type=int)
         p.set_defaults(fn=cmd_set_status, status=status)
+    p_bl = sub.add_parser("blacklist", help="Titel, die nie wieder automatisch angelegt werden sollen")
+    bl_sub = p_bl.add_subparsers(dest="bl_cmd")
+    p_bl_add = bl_sub.add_parser("add", help="Titel sperren")
+    p_bl_add.add_argument("title")
+    p_bl_rm = bl_sub.add_parser("remove", help="Eintrag entfernen")
+    p_bl_rm.add_argument("id", type=int)
+    bl_sub.add_parser("list", help="Blacklist anzeigen (Standard)")
+    p_bl.set_defaults(fn=cmd_blacklist, bl_cmd=None)
     p_area = sub.add_parser("area", help="Bereiche und Gewichte")
     area_sub = p_area.add_subparsers(dest="area_cmd", required=True)
     area_sub.add_parser("list", help="Bereichsbaum anzeigen")
