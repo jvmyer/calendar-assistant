@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -41,6 +43,40 @@ def test_propose_then_decide_accept_creates_task(env):
     assert "proposal_id" in out
     decided = mcp_server.decide_proposal(out["proposal_id"], True)
     assert decided["accepted"] is True and decided["task_id"] is not None
+
+
+class _FakeCalendar:
+    inserted: ClassVar[list[dict]] = []
+
+    def __init__(self, creds, conn):
+        pass
+
+    def ensure_planner_calendar(self) -> str:
+        return "planner-cal"
+
+    def insert_event(self, calendar_id, body):
+        _FakeCalendar.inserted.append(body)
+        return {"id": f"ev{len(_FakeCalendar.inserted)}"}
+
+
+def test_decide_accept_event_writes_to_calendar_immediately(env, monkeypatch):
+    _FakeCalendar.inserted = []
+    monkeypatch.setattr(mcp_server, "get_credentials", lambda settings: object())
+    monkeypatch.setattr(mcp_server, "CalendarClient", _FakeCalendar)
+    out = mcp_server.propose("Vortrag", kind="event", start="5.11. 13:30", end="5.11. 15:00")
+    decided = mcp_server.decide_proposal(out["proposal_id"], True)
+    assert decided["accepted"] is True and decided["in_calendar"] is True
+    assert _FakeCalendar.inserted and _FakeCalendar.inserted[0]["summary"] == "Vortrag"
+    conn = conn_for(env)
+    assert conn.execute("SELECT gcal_event_id FROM proposals WHERE id = ?",
+                        (out["proposal_id"],)).fetchone()[0] == "ev1"
+
+
+def test_decide_accept_falls_back_quietly_when_reauth_needed(env):
+    # Kein Token im tmp_path -> ReauthNeeded; Zusage darf trotzdem nicht crashen.
+    out = mcp_server.propose("Vortrag", kind="event", start="5.11. 13:30", end="5.11. 15:00")
+    decided = mcp_server.decide_proposal(out["proposal_id"], True)
+    assert decided["accepted"] is True and decided["in_calendar"] is False
 
 
 def test_decide_unknown_proposal_reports_error(env):

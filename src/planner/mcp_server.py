@@ -25,8 +25,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import areas, proposals, tasks
+from .calendar_client import CalendarClient
 from .config import Settings, load_settings
 from .db import connect
+from .google_auth import ReauthNeeded, get_credentials
 from .parsing import parse_deadline, parse_estimate
 
 SOURCE = "claude"
@@ -70,7 +72,7 @@ def add_task(
             conn, title=title, source=SOURCE, actor=ACTOR, area_id=area_id, deadline=dl, estimate_min=est
         )
         if task_id is None:
-            return {"error": "Aufgabe existiert schon."}
+            return {"error": "Aufgabe existiert schon oder der Titel ist gesperrt (Blacklist)."}
         if boost != 1.0:
             conn.execute("UPDATE tasks SET priority_boost = ? WHERE id = ?", (boost, task_id))
             conn.commit()
@@ -117,15 +119,34 @@ def propose(
         return {"proposal_id": pid, "title": title, "kind": kind}
 
 
+def _materialize_now(conn, settings: Settings) -> bool:
+    """Trägt frisch bestätigte Termine sofort in den Kalender ein, statt auf den nächsten
+    Planungslauf des Hintergrunddienstes zu warten (der sonst bis zu 30 Min. dauern kann)."""
+    try:
+        cal = CalendarClient(get_credentials(settings), conn)
+        return proposals.materialize_events(conn, cal) > 0
+    except ReauthNeeded:
+        return False
+
+
 @mcp.tool()
 def decide_proposal(proposal_id: int, accept: bool) -> dict[str, Any]:
-    """Bestätigt oder verwirft einen Vorschlag – nur aufrufen, wenn Jonah im Chat zugestimmt hat."""
+    """Bestätigt oder verwirft einen Vorschlag – nur aufrufen, wenn Jonah im Chat zugestimmt hat.
+
+    Ein bestätigter Termin (kind="event") wird dabei sofort im Kalender angelegt, nicht erst
+    beim nächsten Planungslauf. `in_calendar` sagt, ob das geklappt hat (false z. B. bei
+    abgelaufenem Google-Login – dann holt der Hintergrunddienst es trotzdem nach).
+    """
     settings = load_settings()
     with closing(connect(settings.db_path)) as conn:
         try:
             if accept:
                 task_id = proposals.accept(conn, proposal_id, actor=ACTOR)
-                return {"proposal_id": proposal_id, "accepted": True, "task_id": task_id}
+                in_calendar = _materialize_now(conn, settings)
+                return {
+                    "proposal_id": proposal_id, "accepted": True, "task_id": task_id,
+                    "in_calendar": in_calendar,
+                }
             proposals.reject(conn, proposal_id, actor=ACTOR)
             return {"proposal_id": proposal_id, "accepted": False}
         except KeyError:
