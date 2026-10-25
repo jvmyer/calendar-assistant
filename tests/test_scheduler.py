@@ -30,9 +30,9 @@ def test_free_windows_use_buffer_and_skip_sunday():
     assert all(s.weekday() != 6 for s, _ in free)   # Sonntag nicht im Standard
 
 
-def test_fixed_blocks_have_no_buffer():
+def test_fixed_blocks_also_get_a_buffer():
     free = free_windows(MON_8, Rules(horizon_days=0), busy=[], fixed=[(at(12, 9), at(12, 10))])
-    assert free[0][0] == at(12, 10)
+    assert free[0][0] == at(12, 10, 15)
 
 
 def test_splits_over_days_with_daily_cap():
@@ -102,14 +102,25 @@ def test_near_equal_scores_prefer_earlier_deadline():
     assert first.task_id == 2   # knappe Aufgabe bekommt den frühesten Slot
 
 
-def test_short_gaps_kept_but_only_short_tasks_use_them():
+def test_gap_below_min_block_stays_unused_by_anyone():
     rules = Rules(horizon_days=1)
-    # Lücke 10:00–10:45 → minus je 15 Min. Puffer = 10:15–10:30 → aufs Raster: 10:15–10:30 (15 Min.)
+    # Lücke 10:00–10:45 → minus je 15 Min. Puffer = 10:15–10:30 (15 Min.) → kleiner als min_block_min (30).
     busy = [(at(12, 9), at(12, 10)), (at(12, 10, 45), at(12, 19)), (at(13, 9), at(13, 19))]
     free = free_windows(MON_8, rules, busy)
     assert free == [(at(12, 10, 15), at(12, 10, 30))]
     res = schedule([TaskInput(1, "Kurz", 10), TaskInput(2, "Lang", 120)], free, rules, MON_8)
-    assert [(p.task_id, p.start) for p in res.placements] == [(1, at(12, 10, 15))]
+    assert res.placements == []   # auch die kurze Aufgabe bekommt keinen Blocker unter 30 Minuten
+    assert res.unplaced == {1: 10, 2: 120}
+
+
+def test_gap_exactly_min_block_is_used_by_short_task_only():
+    rules = Rules(horizon_days=1)
+    # Lücke 10:00–11:00 → minus je 15 Min. Puffer = 10:15–10:45 (30 Min.) → passt genau einen Mindestblock.
+    busy = [(at(12, 9), at(12, 10)), (at(12, 11), at(12, 19)), (at(13, 9), at(13, 19))]
+    free = free_windows(MON_8, rules, busy)
+    assert free == [(at(12, 10, 15), at(12, 10, 45))]
+    res = schedule([TaskInput(1, "Kurz", 10), TaskInput(2, "Lang", 120)], free, rules, MON_8)
+    assert [(p.task_id, p.start, p.end) for p in res.placements] == [(1, at(12, 10, 15), at(12, 10, 45))]
     assert res.unplaced == {2: 120}
 
 

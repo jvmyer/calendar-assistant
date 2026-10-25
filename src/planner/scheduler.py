@@ -95,8 +95,8 @@ def free_windows(
 ) -> list[Interval]:
     """Freie Fenster im Arbeitszeitrahmen.
 
-    `busy` (fremde Termine) wird mit Puffer abgezogen, `fixed` (eigene, bereits stehende
-    Blocker) ohne Puffer.
+    Um jeden Termin – fremd (`busy`) wie eigener, schon stehender Blocker (`fixed`) – bleibt
+    `buffer_min` frei.
     """
     start = ceil_to(now, rules.granularity_min)
     first_day = start.date()
@@ -111,9 +111,9 @@ def free_windows(
             windows.append((ws, we))
     pad = timedelta(minutes=rules.buffer_min)
     free = subtract(windows, [(s - pad, e + pad) for s, e in busy])
-    free = subtract(free, fixed or [])
-    # Auch kurze Lücken behalten: eine 10-Minuten-Aufgabe passt in 15 Min. zwischen zwei Terminen.
-    # Dass große Aufgaben sie nicht nutzen, regelt `schedule` über die Mindestblockgröße je Aufgabe.
+    free = subtract(free, [(s - pad, e + pad) for s, e in (fixed or [])])
+    # Fenster unter der Mindestblockgröße sind für `schedule` ohnehin nie nutzbar; das grobe
+    # Granularitäts-Raster hier reicht als Filter, den Rest regelt `schedule` selbst.
     out: list[Interval] = []
     for s, e in free:
         s = ceil_to(s, rules.granularity_min)
@@ -150,18 +150,21 @@ def _capacity_before(windows: list[list[datetime]], deadline: datetime) -> int:
 
 
 def _allowed_length(
-    windows: list[list[datetime]], start: datetime, pending: list[TaskInput], now: datetime
+    windows: list[list[datetime]], start: datetime, pending: list[TaskInput], now: datetime, rules: Rules
 ) -> int | None:
     """Wie lang darf ein Blocker ab `start` höchstens sein, ohne noch wartenden Aufgaben mit früherer
     Deadline die nötige Zeit wegzunehmen? None = keine Einschränkung.
 
     Nur Deadlines, die überhaupt noch erreichbar sind, werden geschützt: ist die Zeit bis dahin ohnehin
-    zu knapp, bringt Zurückhalten nichts.
+    zu knapp, bringt Zurückhalten nichts. Reserviert wird der volle Platzbedarf jeder wartenden Aufgabe:
+    mindestens `min_block_min` plus ihr eigener Puffer danach – sonst bleibt am Ende ein Rest übrig,
+    der für ihren Mindestblock nicht mehr reicht.
     """
     limit: int | None = None
     deadlines = sorted({t.deadline for t in pending if t.deadline is not None and t.deadline > now})
     for d in deadlines:
-        demand = sum(t.remaining_min for t in pending if t.deadline is not None and now < t.deadline <= d)
+        demand = sum(max(t.remaining_min, rules.min_block_min) + rules.buffer_min
+                     for t in pending if t.deadline is not None and now < t.deadline <= d)
         slack = _capacity_before(windows, d) - demand
         if slack < 0:
             continue   # nicht mehr zu retten
@@ -176,6 +179,7 @@ def schedule(tasks: list[TaskInput], free: list[Interval], rules: Rules, now: da
     scores = {t.id: score(t, free, now) for t in tasks}
     windows = [list(w) for w in free]
     per_day: dict[tuple[int, object], int] = defaultdict(int)
+    pad = timedelta(minutes=rules.buffer_min)
     # Scores innerhalb von 0,25 gelten als gleich; dann entscheidet die frühere Deadline.
     # Sonst belegt eine große Aufgabe mit ferner Deadline die frühen Slots einer knappen kleinen.
     ordered = sorted(
@@ -201,13 +205,15 @@ def schedule(tasks: list[TaskInput], free: list[Interval], rules: Rules, now: da
             length = minutes(w[0], cap_end)
             day = w[0].astimezone(TZ).date()
             room = rules.max_task_per_day_min - per_day[(task.id, day)]
-            chunk = min(need, length, room)
-            allowed = _allowed_length(windows, w[0], pending, now)
+            # Jeder Blocker ist mindestens `min_block_min` lang, auch wenn weniger Aufwand nötig ist
+            # (die übrige Zeit ist dann Puffer/Nachdenkzeit im Termin selbst).
+            chunk = min(max(need, rules.min_block_min), length, room)
+            allowed = _allowed_length(windows, w[0], pending, now, rules)
             if allowed is not None:
                 step = rules.granularity_min
                 if -(-chunk // step) * step > allowed:   # inkl. Aufrunden aufs Raster, das Zeit kostet
                     chunk = min(chunk, (allowed // step) * step)
-            if chunk <= 0 or chunk < min(rules.min_block_min, need):
+            if chunk <= 0 or chunk < rules.min_block_min:
                 continue
             leftover = need - chunk
             if 0 < leftover < rules.min_block_min:   # keinen winzigen Rest übrig lassen
@@ -217,7 +223,7 @@ def schedule(tasks: list[TaskInput], free: list[Interval], rules: Rules, now: da
             start = w[0]
             end = start + timedelta(minutes=chunk)
             result.placements.append(Placement(task.id, start, end))
-            w[0] = ceil_to(end, rules.granularity_min)
+            w[0] = ceil_to(end + pad, rules.granularity_min)   # Puffer zum nächsten Blocker im selben Fenster
             per_day[(task.id, day)] += chunk
             need -= chunk
         if need > 0:

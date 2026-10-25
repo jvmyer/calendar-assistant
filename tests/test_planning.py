@@ -241,14 +241,14 @@ def test_subscribed_ics_calendar_counts_as_busy(env):
 def test_short_gap_is_used_by_short_task_only(env):
     conn, cal, rules = env
     cal.busy(at(12, 9), at(12, 10))
-    cal.busy(at(12, 10, 45), at(12, 19))   # Lücke 10:15–10:35 nach Puffer und Raster = 20 Min.
+    cal.busy(at(12, 11), at(12, 19))   # Lücke 10:00–11:00 → nach Puffer 10:15–10:45 (30 Min., genau ein Mindestblock)
     cal.busy(at(13, 9), at(13, 19))
     cal.busy(at(14, 9), at(14, 19))
     tasks.add_task(conn, title="Kurz", source="manual", actor="user", estimate_min=10)
     tasks.add_task(conn, title="Lang", source="manual", actor="user", estimate_min=120)
     run_plan(conn, cal, rules, now=NOW)
     by_title = {e["summary"]: datetime.fromisoformat(e["start"]["dateTime"]) for e in cal.events["planner"].values()}
-    assert by_title["Kurz"] == at(12, 10, 15)
+    assert by_title["Kurz"] == at(12, 10, 15)   # bekommt trotz 10 Min. Aufwand den vollen 30-Min.-Block
     assert by_title["Lang"] >= at(15, 9)
 
 
