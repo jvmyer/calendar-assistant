@@ -178,6 +178,9 @@ dann `sudo tlp start`. Ob es geht, zeigt `sudo tlp-stat -b`. Geht es nicht, ist 
   `mail-review`), `./enable-mail.sh` (Mail-Abruf einschalten).
 - Härtung: `scp deploy/harden.sh <user>@<server-ip>:~ && ssh -t <user>@<server-ip> 'sudo bash harden.sh'`
   (SSH nur mit Schlüssel, kein root, nur `<user>`; Dienst mit UMask 0077). Vorher muss der Schlüssel-Login gehen.
+- Nachtruhe (eingerichtet 2026-10-26): `sudo bash nachtruhe.sh` – Ruhezustand 20:00–07:30, Wecken per RTC
+  (`rtcwake -m mem`, getestet). **Nicht** `-m off`: aus dem ausgeschalteten Zustand startet der Acer nicht von
+  selbst (getestet, musste per Knopf an). Abschalten: `sudo bash nachtruhe.sh --aus`; Log: `journalctl -t nachtruhe`.
 
 ## 10. Fernzugriff von unterwegs (Tailscale, eingerichtet 2026-10-19)
 
