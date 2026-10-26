@@ -5,8 +5,8 @@ import pytest
 from planner import proposals, tasks
 from planner.db import connect
 from planner.rules import TZ, Rules
-from test_gtasks import FakeTasks, cycle
 from test_planning import FakeCal, at
+from test_pool import FakeTasks, cycle, seed, slot_of
 
 
 class CalWithInsert(FakeCal):
@@ -87,9 +87,10 @@ def test_accepted_task_becomes_real_task_and_gets_a_block(env):
                                  source_ref="m3", deadline="2026-10-23", estimate_min=10)
     task_id = proposals.accept(conn, pid, actor="user")
     assert task_id is not None
+    seed(cal, tc, 1)
     cycle(conn, cal, tc, rules)
     assert [e["summary"] for e in planner_events(cal)] == ["Anmeldung"]      # Zeit war da → Blocker
-    assert tc.only()["title"] == "Anmeldung"                                     # und eine Begleit-Task zum Abhaken
+    assert slot_of(cal, tc, "Anmeldung")                                         # mit Abhak-Kästchen im Zeitfenster
 
 
 def test_rejected_never_materializes(env):

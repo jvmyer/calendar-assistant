@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from . import changelog, gtasks, proposals
+from . import changelog, pool, proposals
 from .calendar_client import CalendarClient
 from .config import Settings
 from .connectors.ical_sync import Event, SyncResult, sync_url
@@ -106,25 +106,27 @@ def planning_step(
 ) -> None:
     """Ein Planungsdurchlauf in dieser Reihenfolge (jeder Schritt einzeln abgesichert):
 
-    1. Änderungen des Nutzers in Google Tasks lesen (abgehakt / gelöscht – der Mensch gewinnt)
-    2. bestätigte Termine in den Kalender eintragen
-    3. planen: Blocker setzen, wo Zeit ist (verstrichene Aufgaben gelten als erledigt)
-    4. Google Tasks nachziehen: Aufgaben OHNE Zeitfenster stehen dort (Auffangnetz), mit Blocker nicht
+    1. bestätigte Termine in den Kalender eintragen
+    2. planen: Blocker setzen, wo Zeit ist (verstrichene Aufgaben gelten als erledigt)
+    3. Vorrat nachziehen: jeder Blocker bekommt eine „Aufgabe mit Zeitraum“ zum Abhaken im selben Zeitfenster
+       (pool.py). Ganztägige Tasks gibt es nicht mehr (Nutzer 2026-10-26) – was keinen Platz findet, meldet
+       der Planer einmal täglich per Telegram, bis es gelöst ist.
 
     Vorschläge werden nicht mehr aktiv gemeldet (zu viel Telegram-Rauschen) – `/vorschlaege` zeigt sie auf Nachfrage.
     Was der Planer dabei tut (verschoben/entfernt/neu angelegt), wird ebenfalls nicht mehr gemeldet
     (`planner plan` zeigt es auf Nachfrage) – gemeldet wird nur noch eine neue Aufgabe selbst (mail_flow/ilias_flow)
-    sowie Warnungen, die der Nutzer wirklich braucht (Aufgabe passt nicht mehr vor die Deadline, überfällig).
+    sowie Warnungen, die der Nutzer wirklich braucht (Aufgabe passt nicht mehr vor die Deadline, überfällig,
+    Vorrat knapp).
     """
-    if tc is not None:
-        _guarded(conn, "gtasks.pull", lambda: gtasks.pull_changes(conn, tc))
     _guarded(conn, "proposals", lambda: proposals.materialize_events(conn, cal))
     report = _guarded(conn, "planner", lambda: run_plan(conn, cal, rules, now=now))
     if report is not None and report.warnings:
         notifier.send("\n".join(report.warnings))
     if tc is not None:
-        _guarded(conn, "gtasks.push", lambda: gtasks.push(
-            conn, tc, now=now, unplaced=report.unplaced if report else None))
+        _guarded(conn, "gtasks.retire", lambda: pool.retire_legacy_tasks(conn, tc))
+        pool_report = _guarded(conn, "pool", lambda: pool.sync(conn, cal, tc, now=now))
+        if pool_report is not None and (text := pool.warning(conn, pool_report, now)):
+            notifier.send(text)
 
 
 ILIAS_MIN_INTERVAL = timedelta(minutes=30)

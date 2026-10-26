@@ -281,15 +281,15 @@ def run_plan(
     report.unplaced, report.overdue = dict(result.unplaced), set(result.overdue)
 
     # Warnungen: neu oder verändert sofort, ungelöste einmal pro Tag erneut – wichtige Aufgaben
-    # dürfen nicht untergehen. Die Aufgabe steht dann trotzdem als Google Task im Kalender.
+    # dürfen nicht untergehen (eine ganztägige Task als Auffangnetz gibt es seit 2026-10-26 nicht mehr).
     today = now.date().isoformat()
     current: dict[str, tuple[str, str]] = {}
     for tid, missing in result.unplaced.items():
         t = tasks[tid]
         current[f"unplaced:{tid}"] = (f"{missing}@{today}", (
-            f"⚠️ „{t['title']}“: {missing} Min. passen nicht mehr vor die Deadline – steht als Task im Kalender, bitte selbst Zeit schaffen"
+            f"⚠️ „{t['title']}“: {missing} Min. passen nicht mehr vor die Deadline – bitte selbst Zeit schaffen (ich erinnere täglich)"
             if t["deadline"] and tid not in result.overdue else
-            f"⚠️ „{t['title']}“: {missing} Min. finden im Planungshorizont keinen Platz – steht als Task im Kalender"))
+            f"⚠️ „{t['title']}“: {missing} Min. finden im Planungshorizont keinen Platz – ich erinnere täglich, bis Zeit frei wird"))
     for tid in result.overdue:
         current[f"overdue:{tid}"] = (f"1@{today}", f"⏰ „{tasks[tid]['title']}“ ist überfällig – wird so früh wie möglich eingeplant")
     previous = json.loads(get_meta(conn, "plan_warnings") or "{}")

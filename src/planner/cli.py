@@ -32,6 +32,8 @@ def cmd_status(_args) -> int:
     print(f"Datenbank: {settings.db_path}")
     n_open = conn.execute("SELECT COUNT(*) FROM tasks WHERE status='open'").fetchone()[0]
     print(f"Offene Aufgaben: {n_open}")
+    free, used = (conn.execute(f"SELECT COUNT(*) FROM pool WHERE block_id IS {op} NULL").fetchone()[0] for op in ("", "NOT"))
+    print(f"Vorrat (Aufgaben mit Zeitraum): {free} frei, {used} belegt")
     try:
         get_credentials(settings)
         print("Google: eingeloggt")
@@ -482,7 +484,24 @@ def cmd_plan(args) -> int:
             print(f"Erkannt: {report.pinned} verschoben (gepinnt), {report.removed_by_user} gelöscht.")
         return 0
     planning_step(conn, cal, TasksClient(creds, conn), rules, _PrintNotifier(), datetime.now(UTC))
-    print("Planung abgeschlossen (Kalender-Blocker und Google Tasks aktuell).")
+    print("Planung abgeschlossen (Kalender-Blocker und Vorrat-Aufgaben aktuell).")
+    return 0
+
+
+def cmd_vorrat_einsammeln(_args) -> int:
+    """Nach dem Anlegen per Chrome: alle offenen Tasks namens „Vorrat“ in die Liste „Planer-Vorrat“ holen.
+    Der Planer-Dienst ordnet sie beim nächsten Lauf zu und parkt sie (2030)."""
+    from .gtasks import TasksClient
+    from .pool import collect_strays
+
+    settings = load_settings()
+    try:
+        creds = get_credentials(settings)
+    except ReauthNeeded as exc:
+        print(f"Bitte `planner login` ausführen ({exc})")
+        return 1
+    moved = collect_strays(TasksClient(creds, connect(settings.db_path)))
+    print(f"{moved} Vorrat-Aufgabe(n) in „Planer-Vorrat“ verschoben.")
     return 0
 
 
@@ -590,6 +609,8 @@ def main(argv: list[str] | None = None) -> int:
     p_plan = sub.add_parser("plan", help="Aufgaben jetzt einplanen")
     p_plan.add_argument("--dry-run", action="store_true", help="Nur anzeigen, nichts in den Kalender schreiben")
     p_plan.set_defaults(fn=cmd_plan)
+    sub.add_parser("vorrat-einsammeln", help="Per Chrome angelegte „Vorrat“-Aufgaben in die Vorrat-Liste holen").set_defaults(
+        fn=cmd_vorrat_einsammeln)
     sub.add_parser("login", help="Google-Login (öffnet den Browser)").set_defaults(fn=cmd_login)
     sub.add_parser("status", help="Zustand anzeigen").set_defaults(fn=cmd_status)
     p_log = sub.add_parser("log", help="Change-Log anzeigen")

@@ -124,7 +124,8 @@ CREATE TABLE IF NOT EXISTS proposals (
     UNIQUE (source, source_ref)
 );
 
--- Zuordnung Aufgabe → Google Task (jede offene Aufgabe hat immer eine)
+-- Altbestand: Aufgabe → ganztägige Google Task (seit 2026-10-26 abgelöst durch `pool`, wird beim
+-- nächsten Lauf geleert – siehe pool.retire_legacy_tasks)
 CREATE TABLE IF NOT EXISTS gtasks (
     task_id     INTEGER PRIMARY KEY REFERENCES tasks(id),
     tasklist_id TEXT NOT NULL,
@@ -147,6 +148,17 @@ CREATE TABLE IF NOT EXISTS blocks (
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_blocks_task ON blocks(task_id);
+
+-- Vorrat an „Aufgaben mit Zeitraum“ (Liste „Planer-Vorrat“), siehe pool.py
+CREATE TABLE IF NOT EXISTS pool (
+    gtask_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,                       -- zugehöriger focusTime-Eintrag im Hauptkalender
+    block_id INTEGER UNIQUE REFERENCES blocks(id), -- NULL = frei (geparkt)
+    title    TEXT,                                -- zuletzt nach Google geschriebener Stand
+    start    TEXT,
+    end      TEXT,
+    done     INTEGER
+);
 
 -- Termine aus externen Quellen (Stundenplan etc.); Diff gegen den letzten Abruf
 CREATE TABLE IF NOT EXISTS external_events (

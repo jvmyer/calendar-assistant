@@ -1,7 +1,7 @@
 """Google Calendar: eigener Nebenkalender „Planer“ für Blocker.
 
-Der Hauptkalender wird nur gelesen. Eigene Events sind per `extendedProperties.private`
-markiert, damit das Tool nie fremde Termine verändert.
+Der Hauptkalender wird nur gelesen (Ausnahme: Vorrat-Einträge aus pool.py werden verschoben).
+Eigene Events sind per `extendedProperties.private` markiert, damit das Tool nie fremde Termine verändert.
 """
 
 from __future__ import annotations
@@ -48,6 +48,14 @@ class CalendarClient:
     def update_event(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return self._svc.events().update(calendarId=calendar_id, eventId=event_id, body=body).execute()
 
+    def patch_event(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Nur für die Vorrat-Einträge (pool.py) im Hauptkalender: Zeit verschieben, sonst nichts."""
+        return self._svc.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
+
+    @staticmethod
+    def primary_calendar_id() -> str:
+        return "primary"
+
     def remove_event(self, calendar_id: str, event_id: str) -> None:
         from googleapiclient.errors import HttpError
 
@@ -68,9 +76,12 @@ class CalendarClient:
             if not page:
                 return items
 
-    def list_events(self, calendar_id: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    def list_events(
+        self, calendar_id: str, start: datetime, end: datetime, *, event_types: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         page = None
+        extra = {"eventTypes": event_types} if event_types else {}
         while True:
             res = (
                 self._svc.events()
@@ -81,6 +92,7 @@ class CalendarClient:
                     singleEvents=True,
                     orderBy="startTime",
                     pageToken=page,
+                    **extra,
                 )
                 .execute()
             )

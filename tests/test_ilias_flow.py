@@ -10,8 +10,8 @@ from planner.db import connect
 from planner.ilias_flow import process_news, task_title
 from planner.rules import TZ, Rules
 from planner.service import planning_step
-from test_gtasks import FakeTasks
 from test_planning import FakeCal
+from test_pool import FakeTasks, seed, slot_of
 
 NOW = datetime(2026, 10, 13, 10, 30, tzinfo=TZ)   # Dienstag
 
@@ -233,23 +233,25 @@ def test_end_to_end_into_calendar(conn):
     add_news(conn, "1", "Blatt 3.txt", ref="100")
     process_news(conn, Client({"100": txt("Abgabe bis spätestens 20.10. 19 Uhr")}), Channel(), NOW)
     cal, tc, out = FakeCal(), FakeTasks(), Channel()
+    seed(cal, tc, 2)
     planning_step(conn, cal, tc, Rules(horizon_days=14), out, NOW)
     blocks = [e for e in cal.events["planner"].values() if e["summary"].startswith("Abgabe")]
     assert len(blocks) == 1 and datetime.fromisoformat(blocks[0]["end"]["dateTime"]) <= datetime(2026, 10, 20, 19, 0, tzinfo=TZ)
     assert "Frist: 20.10.2026 19:00" in blocks[0]["description"]
-    assert tc.only()["title"].startswith("Abgabe")         # Zeitfenster gefunden → Blocker + Begleit-Task zum Abhaken
+    start, _, _ = slot_of(cal, tc, blocks[0]["summary"])    # Zeitfenster gefunden → Abhak-Kästchen im Blocker
+    assert start.isoformat() == blocks[0]["start"]["dateTime"]
 
 
-def test_end_to_end_without_time_falls_back_to_google_task(conn):
+def test_end_to_end_without_time_warns_instead_of_all_day_task(conn):
     add_news(conn, "1", "Blatt 3.txt", ref="100")
     process_news(conn, Client({"100": txt("Abgabe bis spätestens 20.10. 19 Uhr")}), Channel(), NOW)
     cal, tc = FakeCal(), FakeTasks()
     for d in range(13, 21):                                # alles bis zur Frist belegt
         cal.busy(datetime(2026, 10, d, 9, tzinfo=TZ), datetime(2026, 10, d, 19, tzinfo=TZ))
-    planning_step(conn, cal, tc, Rules(horizon_days=14), Channel(), NOW)
-    google = tc.only()
-    assert google["title"].startswith("Abgabe: Blatt 3") and google["due"].startswith("2026-10-20")
-    assert not cal.events["planner"]
+    out = Channel()
+    planning_step(conn, cal, tc, Rules(horizon_days=14), out, NOW)
+    assert not cal.events["planner"] and not tc.items     # keine Ganztags-Task mehr …
+    assert any("Abgabe: Blatt 3" in m for m, _ in out.sent)   # … sondern eine Warnung
 
 
 # -- Kurs ↔ Stundenplan -----------------------------------------------------------------------------------------------------------------

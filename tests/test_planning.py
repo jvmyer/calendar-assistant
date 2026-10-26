@@ -18,7 +18,8 @@ class FakeCal:
     def __init__(self):
         self.calendars = [{"id": "planner", "summary": "Planer"}, {"id": "main", "summary": "Uni"},
                           {"id": "de#holiday@group.v.calendar.google.com", "summary": "Feiertage"}]
-        self.events: dict[str, dict] = {"planner": {}, "main": {}, "de#holiday@group.v.calendar.google.com": {}}
+        self.events: dict[str, dict] = {"planner": {}, "main": {}, "de#holiday@group.v.calendar.google.com": {},
+                                        "primary": {}}   # Hauptkalender: nur Vorrat-Einträge (pool.py)
         self.n = 0
 
     def ensure_planner_calendar(self):
@@ -27,8 +28,20 @@ class FakeCal:
     def list_calendars(self):
         return self.calendars
 
-    def list_events(self, cid, start, end):
-        return list(self.events[cid].values())
+    def list_events(self, cid, start, end, event_types=None):
+        evs = list(self.events[cid].values())
+        return [e for e in evs if e.get("eventType") in event_types] if event_types else evs
+
+    def primary_calendar_id(self):
+        return "primary"
+
+    def patch_event(self, cid, eid, body):
+        if eid not in self.events[cid]:
+            from googleapiclient.errors import HttpError
+            from httplib2 import Response
+            raise HttpError(Response({"status": 404}), b"")
+        self.events[cid][eid].update(body)
+        return dict(self.events[cid][eid])
 
     def _put(self, eid, title, start, end, description=""):
         self.events["planner"][eid] = {"id": eid, "summary": title, "description": description,
