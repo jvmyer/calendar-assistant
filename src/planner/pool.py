@@ -6,7 +6,7 @@ angelegte lässt sich aber verschieben, umbenennen, abhaken und wieder öffnen (
 Deshalb liegt in der Liste „Planer-Vorrat“ ein fester Vorrat solcher Aufgaben, der immer wieder verwendet wird:
 
 - frei: geparkt am 01.01.2030 (im Alltag unsichtbar), Titel „Vorrat“
-- belegt: steht genau im Zeitfenster eines Blockers, Titel = Aufgabe. Abhaken ist reine Erinnerung und wirkt
+- belegt: steht 15 Min. lang am Anfang des Blockers (immer innerhalb), Titel = Aufgabe. Abhaken ist reine Erinnerung und wirkt
   NICHT auf die Aufgabe zurück (Nutzer 2026-10-20) – erledigt wird über die Zeit oder per Telegram.
 - Einen Tag nach Ende des Blocks geht sie zurück auf den Parkplatz.
 
@@ -34,6 +34,7 @@ PARK_TITLE = "Vorrat"
 PARK_START = datetime(2030, 1, 1, 8, 0, tzinfo=TZ)
 PARK_END = datetime(2030, 1, 1, 8, 30, tzinfo=TZ)
 KEEP_AFTER_END = timedelta(days=1)     # abgelaufene Blöcke behalten ihr Kästchen noch einen Tag
+SLOT = timedelta(minutes=15)          # Länge des Kästchens im Kalender (Nutzer 2026-10-26)
 LOW_WATER = 10                         # darunter wird gewarnt
 SEARCH_BACK = timedelta(days=60)       # hier sucht die Zuordnung neue Vorrat-Einträge im Kalender
 SEARCH_UNTIL = datetime(2031, 1, 1, tzinfo=TZ)
@@ -165,8 +166,9 @@ def sync(conn: sqlite3.Connection, cal, tc, *, now: datetime | None = None) -> P
     taken = {r["block_id"]: r for r in conn.execute("SELECT * FROM pool WHERE block_id IS NOT NULL")}
     free = list(conn.execute("SELECT * FROM pool WHERE block_id IS NULL ORDER BY gtask_id"))
     for bid, b in wanted.items():
+        start, end = datetime.fromisoformat(b["start"]), datetime.fromisoformat(b["end"])
         kw: dict[str, Any] = {"block_id": bid, "title": b["title"], "notes": _notes(b["task_id"]),
-                              "start": datetime.fromisoformat(b["start"]), "end": datetime.fromisoformat(b["end"])}
+                              "start": start, "end": min(start + SLOT, end)}   # nie über den Blocker hinaus
         row = taken.get(bid)
         if row is not None and w.put(row, **kw, done=True if b["status"] == "done" else None):
             continue   # Haken des Nutzers bleibt (reine Erinnerung)

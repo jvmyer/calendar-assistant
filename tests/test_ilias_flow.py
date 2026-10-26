@@ -238,7 +238,7 @@ def test_end_to_end_into_calendar(conn):
     blocks = [e for e in cal.events["planner"].values() if e["summary"].startswith("Abgabe")]
     assert len(blocks) == 1 and datetime.fromisoformat(blocks[0]["end"]["dateTime"]) <= datetime(2026, 10, 20, 19, 0, tzinfo=TZ)
     assert "Frist: 20.10.2026 19:00" in blocks[0]["description"]
-    start, _, _ = slot_of(cal, tc, blocks[0]["summary"])    # Zeitfenster gefunden → Abhak-Kästchen im Blocker
+    start, _, _ = slot_of(cal, tc, blocks[0]["summary"])    # Zeitfenster gefunden → Abhak-Kästchen am Anfang des Blockers
     assert start.isoformat() == blocks[0]["start"]["dateTime"]
 
 

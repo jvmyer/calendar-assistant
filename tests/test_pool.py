@@ -108,15 +108,16 @@ def test_new_pool_entries_are_adopted_and_parked(env):
     assert all(t["title"] == "Vorrat" for t in tc.items.values())
 
 
-def test_block_gets_the_checkbox_in_the_same_time_slot(env):
-    """Kern des Ganzen: die Aufgabe mit Zeitraum steht genau im Zeitfenster des Blockers."""
+def test_block_gets_a_15_minute_checkbox_at_its_start(env):
+    """Kern des Ganzen: die Aufgabe mit Zeitraum steht 15 Min. lang am Anfang des Blockers, immer innerhalb."""
     conn, cal, tc, rules = env
     seed(cal, tc, 3)
     tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60, deadline="2026-10-20")
     cycle(conn, cal, tc, rules)
     [block] = cal.events["planner"].values()
     start, end, t = slot_of(cal, tc, "Bericht")
-    assert start.isoformat() == block["start"]["dateTime"] and end.isoformat() == block["end"]["dateTime"]
+    assert start.isoformat() == block["start"]["dateTime"] and end - start == timedelta(minutes=15)
+    assert end <= datetime.fromisoformat(block["end"]["dateTime"])
     assert f"Aufgabe #{tid}" in t["notes"] and t["status"] == "needsAction"
     assert parked(cal) == 2
 
@@ -143,7 +144,18 @@ def test_checkbox_follows_when_the_block_moves(env):
     ev["start"]["dateTime"], ev["end"]["dateTime"] = at(14, 15).isoformat(), at(14, 16).isoformat()   # Nutzer verschiebt
     cycle(conn, cal, tc, rules)
     start, end, _ = slot_of(cal, tc, "Bericht")
-    assert (start, end) == (at(14, 15), at(14, 16))
+    assert (start, end) == (at(14, 15), at(14, 15, 15))
+
+
+def test_checkbox_never_sticks_out_of_a_short_block(env):
+    conn, cal, tc, rules = env
+    seed(cal, tc, 1)
+    tasks.add_task(conn, title="Kurz", source="manual", actor="user", estimate_min=30)
+    cycle(conn, cal, tc, rules)
+    [ev] = cal.events["planner"].values()
+    ev["start"]["dateTime"], ev["end"]["dateTime"] = at(14, 15).isoformat(), at(14, 15, 10).isoformat()   # Nutzer kürzt
+    cycle(conn, cal, tc, rules)
+    assert slot_of(cal, tc, "Kurz")[:2] == (at(14, 15), at(14, 15, 10))
 
 
 def test_ticking_the_checkbox_is_only_a_reminder(env):
