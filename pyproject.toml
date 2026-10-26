@@ -1,7 +1,7 @@
 [project]
 name = "calendar-assistant"
 version = "0.1.0"
-description = "Persönlicher Planungsassistent: Aufgaben aus Quellen → Blocker in Google Kalender"
+description = "Self-hosted planning assistant: tasks from email, ILIAS and Telegram become time blocks in Google Calendar"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
