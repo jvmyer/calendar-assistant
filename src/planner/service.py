@@ -38,6 +38,7 @@ log = logging.getLogger("planner")
 TZ = ZoneInfo("Europe/Berlin")
 MIN_INTERVAL_MIN = 30
 TOKEN_WARN_AFTER = timedelta(days=6)  # Testmodus: Refresh-Token läuft nach 7 Tagen ab
+REAUTH_REMIND_EVERY = timedelta(days=1)
 MAX_LINES = 8
 
 
@@ -319,11 +320,18 @@ def sync_cycle(
         set_meta(conn, "reauth_notified", "0")
         _plan_step(conn, cal, tc, settings, notifier, now)
     except ReauthNeeded as exc:
-        if get_meta(conn, "reauth_notified") != "1":  # nur einmal melden, nicht alle 30 Min.
-            notifier.send("🔑 Google-Login abgelaufen. Bitte `planner login` ausführen.")
-            set_meta(conn, "reauth_notified", "1")
+        last = get_meta(conn, "reauth_notified")   # "0" oder Zeitpunkt der letzten Meldung
+        try:
+            last_at = datetime.fromisoformat(last) if last and last != "0" else None
+        except ValueError:   # Altbestand "1"
+            last_at = None
+        if last_at is None:
             changelog.log(conn, actor="system", action="auth.expired", entity="google",
                           detail={"reason": str(exc)[:200]})
+        if last_at is None or now - last_at >= REAUTH_REMIND_EVERY:  # täglich erinnern, nicht alle 30 Min.
+            notifier.send("🔑 Google-Login abgelaufen – ich plane nichts, bis du ihn erneuerst. "
+                          "Bitte `planner login` + `deploy/push.sh --token` ausführen.")
+            set_meta(conn, "reauth_notified", now.isoformat())
     except Exception as exc:
         log.exception("Spiegelung fehlgeschlagen")
         changelog.log(conn, actor="system", action="sync.error", entity="mirror",

@@ -65,16 +65,21 @@ def test_cycle_syncs_and_mirrors(env):
     assert len(cal.events) == 1 and n.msgs == []  # Erstimport meldet nichts
 
 
-def test_reauth_is_notified_only_once(env):
+def test_reauth_is_reminded_daily_not_every_cycle(env):
     conn, settings = env
     n = Collect()
 
     def boom():
         raise ReauthNeeded("abgelaufen")
 
-    for _ in range(3):
-        sync_cycle(conn, settings, n, fetcher=lambda url: ICS, calendar_factory=boom)
+    t0 = datetime(2026, 10, 23, 20, tzinfo=UTC)
+    for minutes in (0, 30, 60):
+        sync_cycle(conn, settings, n, now=t0 + timedelta(minutes=minutes),
+                   fetcher=lambda url: ICS, calendar_factory=boom)
     assert sum("Google-Login abgelaufen" in m for m in n.msgs) == 1
+    sync_cycle(conn, settings, n, now=t0 + timedelta(days=1),
+               fetcher=lambda url: ICS, calendar_factory=boom)
+    assert sum("Google-Login abgelaufen" in m for m in n.msgs) == 2
 
 
 def test_source_error_does_not_crash(env):
