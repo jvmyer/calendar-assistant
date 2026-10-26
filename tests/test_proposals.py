@@ -107,3 +107,16 @@ def test_event_needs_times(env):
     conn, *_ = env
     with pytest.raises(ValueError):
         proposals.add_proposal(conn, title="x", kind="event", source="manual", actor="user")
+
+
+def test_event_times_from_parse_deadline_are_sent_as_full_rfc3339(env):
+    """parse_deadline speichert ohne Sekunden („…T13:30+01:00“) – das lehnt Google mit 400 ab (live 2026-10-26)."""
+    from planner.parsing import parse_deadline
+
+    conn, cal, _, _ = env
+    pid = proposals.add_proposal(conn, title="Treffen", kind="event", source="claude", actor="claude",
+                                 start=parse_deadline("5.11.2026 13:30"), end=parse_deadline("5.11.2026 14:30"))
+    proposals.accept(conn, pid, actor="user")
+    proposals.materialize_events(conn, cal)
+    [ev] = [e for e in cal.events["planner"].values() if e["summary"] == "Treffen"]
+    assert ev["start"]["dateTime"] == "2026-11-05T13:30:00+01:00" and ev["end"]["dateTime"] == "2026-11-05T14:30:00+01:00"

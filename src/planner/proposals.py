@@ -110,8 +110,9 @@ def materialize_events(conn: sqlite3.Connection, cal) -> int:
         ev = cal.insert_event(cal_id, {
             "summary": row["title"],
             "description": row["note"] or "Vom Nutzer bestätigter Vorschlag (Planer).",
-            "start": {"dateTime": row["start"]},
-            "end": {"dateTime": row["end"]},
+            # Gespeichert ist ISO ohne Sekunden („…T13:30+01:00“) – Google will volles RFC 3339, sonst 400.
+            "start": {"dateTime": datetime.fromisoformat(row["start"]).isoformat(timespec="seconds")},
+            "end": {"dateTime": datetime.fromisoformat(row["end"]).isoformat(timespec="seconds")},
         })
         conn.execute("UPDATE proposals SET gcal_event_id = ?, updated_at = ? WHERE id = ?",
                      (ev["id"], now_iso(), row["id"]))
