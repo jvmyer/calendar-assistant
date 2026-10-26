@@ -25,3 +25,10 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+
+# Private Bilder/Dokumente, die nur lokal herumliegen
+WhatsApp*
+*.pem
+*.key
+*.p12
+*.pfx

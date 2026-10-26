@@ -3,7 +3,7 @@
 # Voraussetzung: Login per SSH-Schlüssel funktioniert (ssh-copy-id), sonst sperrst du dich aus.
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "Bitte mit sudo ausführen: sudo bash $0" >&2; exit 1; }
-ADMIN="${SUDO_USER:-<user>}"
+ADMIN="${SUDO_USER:?Bitte per sudo als Admin-Benutzer starten}"
 [ -s "/home/$ADMIN/.ssh/authorized_keys" ] || { echo "Kein SSH-Schlüssel für $ADMIN hinterlegt – Abbruch." >&2; exit 1; }
 
 echo "==> SSH: nur Schlüssel, kein root, kein Passwort"

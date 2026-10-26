@@ -14,6 +14,7 @@ ohne Token startet der Server nicht (siehe `build_app`).
 
 from __future__ import annotations
 
+import hmac
 from contextlib import closing
 from typing import Any
 
@@ -218,7 +219,8 @@ class _BearerAuth(BaseHTTPMiddleware):
         self._token = token
 
     async def dispatch(self, request: Request, call_next):
-        if request.headers.get("authorization") != f"Bearer {self._token}":
+        sent = request.headers.get("authorization", "").encode()
+        if not hmac.compare_digest(sent, f"Bearer {self._token}".encode()):   # zeitkonstant
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
 

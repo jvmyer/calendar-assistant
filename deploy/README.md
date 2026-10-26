@@ -70,7 +70,7 @@ Netzwerk Realtek (LAN) + Qualcomm Atheros (WLAN, ungenutzt).
 | Netzwerk | **LAN-Kabel** bevorzugt (stabiler als WLAN). Nur WLAN? Dann hier das WLAN eintragen |
 | Installationsart | Ubuntu Server (nicht „minimized“) |
 | Festplatte | Use an entire disk. **Ohne** Verschlüsselung (siehe Hinweis unten) |
-| Name / Server-Name / Benutzer | z. B. `<user>` / `<server>` (so ist es tatsächlich installiert) / ein Passwort, das du dir merkst |
+| Name / Server-Name / Benutzer | z. B. `admin` / `planner-server` / ein Passwort, das du dir merkst |
 | OpenSSH server | **Ja installieren** (und „Allow password authentication“ vorerst lassen) |
 | Featured snaps | nichts auswählen |
 
@@ -185,8 +185,8 @@ dann `sudo tlp start`. Ob es geht, zeigt `sudo tlp-stat -b`. Geht es nicht, ist 
 ## 10. Fernzugriff von unterwegs (Tailscale, eingerichtet 2026-10-19)
 
 Tailscale verbindet Mac und Server in einem eigenen privaten Netz (WireGuard, NAT-Traversal) – ohne
-Portfreigabe am Router. Server-Tailscale-IP: **`<tailscale-ip>`** (Name `<server>`, Konto
-88045436+jvmyer@users.noreply.github.com, `tailscale status` zeigt alle Geräte im Netz).
+Portfreigabe am Router. Server-Tailscale-IP: **`<tailscale-ip>`** (`tailscale ip -4` auf dem Server;
+`tailscale status` zeigt alle Geräte im Netz).
 
 Von unterwegs (ohne Heimnetz) einfach die Tailscale-IP statt der lokalen `<server-ip>` nehmen:
 
