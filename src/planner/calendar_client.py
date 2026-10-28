@@ -56,6 +56,17 @@ class CalendarClient:
     def primary_calendar_id() -> str:
         return "primary"
 
+    def get_event(self, calendar_id: str, event_id: str) -> dict[str, Any] | None:
+        """Einzelnen Eintrag lesen (auch gelöschte: `status == "cancelled"`); None = gar nicht mehr da."""
+        from googleapiclient.errors import HttpError
+
+        try:
+            return self._svc.events().get(calendarId=calendar_id, eventId=event_id).execute()
+        except HttpError as exc:
+            if exc.resp.status in (404, 410):
+                return None
+            raise
+
     def remove_event(self, calendar_id: str, event_id: str) -> None:
         from googleapiclient.errors import HttpError
 

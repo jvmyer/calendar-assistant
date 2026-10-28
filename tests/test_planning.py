@@ -21,6 +21,7 @@ class FakeCal:
         self.events: dict[str, dict] = {"planner": {}, "main": {}, "de#holiday@group.v.calendar.google.com": {},
                                         "primary": {}}   # Hauptkalender: nur Vorrat-Einträge (pool.py)
         self.n = 0
+        self.on_patch = None   # test_pool: Google Tasks zieht beim Verschieben das Datum der Task nach
 
     def ensure_planner_calendar(self):
         return "planner"
@@ -29,7 +30,7 @@ class FakeCal:
         return self.calendars
 
     def list_events(self, cid, start, end, event_types=None):
-        evs = list(self.events[cid].values())
+        evs = [e for e in self.events[cid].values() if e.get("status") != "cancelled"]
         return [e for e in evs if e.get("eventType") in event_types] if event_types else evs
 
     def primary_calendar_id(self):
@@ -41,7 +42,13 @@ class FakeCal:
             from httplib2 import Response
             raise HttpError(Response({"status": 404}), b"")
         self.events[cid][eid].update(body)
+        if self.on_patch:
+            self.on_patch(self.events[cid][eid])
         return dict(self.events[cid][eid])
+
+    def get_event(self, cid, eid):
+        ev = self.events[cid].get(eid)
+        return dict(ev) if ev else None
 
     def _put(self, eid, title, start, end, description=""):
         self.events["planner"][eid] = {"id": eid, "summary": title, "description": description,

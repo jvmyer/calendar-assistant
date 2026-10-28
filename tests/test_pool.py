@@ -13,11 +13,19 @@ CREATED = at(28, 16, 30)   # dort legt die Google-Oberfläche neue Aufgaben ab (
 
 
 class FakeTasks:
-    """Google Tasks mit mehreren Listen; Listen-ID = Titel."""
+    """Google Tasks mit mehreren Listen; Listen-ID = Titel.
 
-    def __init__(self):
+    Wie Google (live geprüft 2026-10-27): Verschieben des Eintrags zieht `due` nach. Passt `due` nicht zum
+    Eintrag, setzt ein Tasks-Patch ihn auf `due` 08:00 zurück (Dauer bleibt). `due` per API setzen löscht den
+    Zeitblock (Eintrag „cancelled“).
+    """
+
+    def __init__(self, cal=None):
         self.lists: dict[str, dict[str, dict]] = {V: {}}
         self.n = 0
+        self.cal = cal
+        if cal is not None:
+            cal.on_patch = self._event_moved
 
     @property
     def items(self) -> dict[str, dict]:
@@ -38,8 +46,30 @@ class FakeTasks:
         return [dict(v) for v in self.lists[list_id].values()]
 
     def patch(self, list_id, task_id, body):
-        self.lists[list_id][task_id].update(body)
-        return dict(self.lists[list_id][task_id])
+        t = self.lists[list_id][task_id]
+        t.update(body)
+        if self.cal is not None and (ev := self._event_of(t)):
+            if "due" in body:
+                ev["status"] = "cancelled"
+            else:
+                self._snap_back(t, ev)
+        return dict(t)
+
+    def _event_of(self, t):
+        key = t["webViewLink"].split("/task/")[1].split("?")[0]
+        return next((e for e in self.cal.events["primary"].values() if f"/task/{key}." in e["description"]), None)
+
+    def _event_moved(self, ev):
+        for t in self.items.values():
+            if self._event_of(t) is ev:
+                t["due"] = ev["start"]["dateTime"][:10] + "T00:00:00.000Z"
+
+    @staticmethod
+    def _snap_back(t, ev):
+        start, end = (datetime.fromisoformat(ev[k]["dateTime"]) for k in ("start", "end"))
+        if start.date().isoformat() != t["due"][:10]:
+            new = datetime.fromisoformat(t["due"][:10]).replace(hour=8, tzinfo=start.tzinfo)
+            ev["start"], ev["end"] = {"dateTime": new.isoformat()}, {"dateTime": (new + (end - start)).isoformat()}
 
     def delete(self, list_id, task_id):
         self.lists.get(list_id, {}).pop(task_id, None)
@@ -54,7 +84,7 @@ def seed(cal, tc, n, *, list_id=V, start=CREATED):
         tc.n += 1
         key = f"k{tc.n}"
         tc.lists.setdefault(list_id, {})[f"t{tc.n}"] = {
-            "id": f"t{tc.n}", "title": "Vorrat", "status": "needsAction",
+            "id": f"t{tc.n}", "title": "Vorrat", "status": "needsAction", "due": f"{start.date()}T00:00:00.000Z",
             "webViewLink": f"https://tasks.google.com/task/{key}?sa=6"}
         cal.events["primary"][f"f{tc.n}"] = {
             "id": f"f{tc.n}", "eventType": "focusTime", "transparency": "transparent", "summary": "Vorrat",
@@ -72,7 +102,8 @@ class Collect:
 
 @pytest.fixture
 def env(tmp_path):
-    return connect(tmp_path / "t.db"), FakeCal(), FakeTasks(), Rules(horizon_days=7)
+    cal = FakeCal()
+    return connect(tmp_path / "t.db"), cal, FakeTasks(cal), Rules(horizon_days=7)
 
 
 def cycle(conn, cal, tc, rules, notifier=None, now=NOW):
@@ -118,8 +149,74 @@ def test_block_gets_a_15_minute_checkbox_at_its_start(env):
     start, end, t = slot_of(cal, tc, "Bericht")
     assert start.isoformat() == block["start"]["dateTime"] and end - start == timedelta(minutes=15)
     assert end <= datetime.fromisoformat(block["end"]["dateTime"])
-    assert f"Aufgabe #{tid}" in t["notes"] and t["status"] == "needsAction"
+    assert f"Aufgabe #{tid}" in t["notes"] and "Frist: 20.10.2026" in t["notes"] and t["status"] == "needsAction"
+    assert t["due"] == f"{start.date()}T00:00:00.000Z"   # Datum der Task = Tag des Blockers
+    assert all(e.get("status") != "cancelled" for e in cal.events["primary"].values())
     assert parked(cal) == 2
+
+
+def test_checkbox_stuck_on_parking_date_is_repaired(env):
+    """Fehlerbild 2026-10-27: Task-Titel stimmt, aber der Eintrag hing am 01.01.2030 (alte Reihenfolge der Patches)."""
+    conn, cal, tc, rules = env
+    seed(cal, tc, 2)
+    tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    cycle(conn, cal, tc, rules)
+    start, _, t = slot_of(cal, tc, "Bericht")
+    t["due"] = "2030-01-01T00:00:00.000Z"
+    tc._snap_back(t, tc._event_of(t))
+    assert slot_of(cal, tc, "Bericht")[0].year == 2030
+    cycle(conn, cal, tc, rules)
+    assert slot_of(cal, tc, "Bericht")[0] == start
+
+
+def test_planner_never_sets_due_itself(env):
+    """`due` per API setzen löscht den Zeitblock – das Datum zieht Google beim Verschieben selbst nach."""
+    conn, cal, tc, rules = env
+    seed(cal, tc, 3)
+    bodies = []
+    patch = tc.patch
+    tc.patch = lambda l, t, body: (bodies.append(body), patch(l, t, body))[1]
+    tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    cycle(conn, cal, tc, rules)
+    cycle(conn, cal, tc, rules, now=at(12, 15))
+    cycle(conn, cal, tc, rules, now=at(13, 15))
+    assert bodies and not any("due" in b for b in bodies)
+
+
+def test_cancelled_time_block_is_removed_and_replaced(env):
+    """Fehlerbild 2026-10-27: Task ohne Zeitblock (Eintrag „cancelled“) – weg damit, der Blocker nimmt die nächste."""
+    conn, cal, tc, rules = env
+    seed(cal, tc, 3)
+    tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    cycle(conn, cal, tc, rules)
+    _, _, t = slot_of(cal, tc, "Bericht")
+    free = next(x for x in tc.items.values() if x["title"] == "Vorrat")
+    tc._event_of(t)["status"] = tc._event_of(free)["status"] = "cancelled"
+    cycle(conn, cal, tc, rules)
+    assert t["id"] not in tc.items and free["id"] not in tc.items
+    _, _, t2 = slot_of(cal, tc, "Bericht")
+    assert t2["id"] != t["id"] and tc._event_of(t2).get("status") != "cancelled"
+    assert conn.execute("SELECT COUNT(*) FROM pool").fetchone()[0] == 1
+
+
+def test_empty_calendar_listing_deletes_nothing(env):
+    conn, cal, tc, rules = env
+    seed(cal, tc, 3)
+    cycle(conn, cal, tc, rules)
+    cal.list_events = lambda *a, **k: []          # Abruf-Panne
+    cycle(conn, cal, tc, rules)
+    assert len(tc.items) == 3 and conn.execute("SELECT COUNT(*) FROM pool").fetchone()[0] == 3
+
+
+def test_deadline_change_updates_the_notes(env):
+    conn, cal, tc, rules = env
+    seed(cal, tc, 1)
+    tid = tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60, deadline="2026-10-20")
+    cycle(conn, cal, tc, rules)
+    conn.execute("UPDATE tasks SET deadline = '2026-10-21T12:00' WHERE id = ?", (tid,))
+    conn.commit()
+    cycle(conn, cal, tc, rules)
+    assert "Frist: 21.10.2026 12:00" in slot_of(cal, tc, "Bericht")[2]["notes"]
 
 
 def test_idempotent_no_writes_when_nothing_changes(env):
@@ -302,3 +399,25 @@ def test_run_plan_alone_does_not_touch_the_pool(env):
     tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
     run_plan(conn, cal, rules, now=NOW)
     assert parked(cal) == 0 and tc.items["t1"]["title"] == "Vorrat"
+
+
+def test_rate_limit_is_retried_instead_of_aborting(env):
+    """Live 2026-10-28: ein 403 „Rate Limit Exceeded“ brach den ganzen Vorrat-Schritt ab."""
+    from googleapiclient.errors import HttpError
+    from httplib2 import Response
+
+    conn, cal, tc, rules = env
+    seed(cal, tc, 2)
+    tasks.add_task(conn, title="Bericht", source="manual", actor="user", estimate_min=60)
+    patch, fails = cal.patch_event, [2]
+
+    def flaky(*a):
+        if fails[0]:
+            fails[0] -= 1
+            raise HttpError(Response({"status": 403}), b'{"error": {"message": "Rate Limit Exceeded"}}')
+        return patch(*a)
+
+    cal.patch_event = flaky
+    cycle(conn, cal, tc, rules)
+    [block] = cal.events["planner"].values()
+    assert slot_of(cal, tc, "Bericht")[0].isoformat() == block["start"]["dateTime"]
