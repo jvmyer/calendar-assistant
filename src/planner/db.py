@@ -247,6 +247,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if "not_before" not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN not_before TEXT")
             conn.commit()
+    if get_meta(conn, "migrated:uni_area") is None:
+        # Einmalig (2026-10-28): offene HKA-Mail- und ILIAS-Aufgaben ohne Bereich zählen zu „Uni“,
+        # damit ihre Blocker in den Kalender „Uni“ umziehen (vorher bekamen sie keinen Bereich).
+        where = ("area_id IS NULL AND status = 'open' AND (source = 'ilias' OR "
+                 "(source = 'mail' AND source_ref IN (SELECT item_id FROM mails WHERE source = 'hka')))")
+        if conn.execute(f"SELECT 1 FROM tasks WHERE {where}").fetchone():
+            uni = conn.execute("SELECT id FROM areas WHERE parent_id IS NULL AND name = 'Uni' COLLATE NOCASE").fetchone()
+            uni_id = uni["id"] if uni else conn.execute("INSERT INTO areas(name) VALUES ('Uni')").lastrowid
+            conn.execute(f"UPDATE tasks SET area_id = ? WHERE {where}", (uni_id,))
+        set_meta(conn, "migrated:uni_area", "1")
 
 
 

@@ -212,7 +212,7 @@ def _ilias_to_task(conn: sqlite3.Connection, news_id: str) -> Reply:
     if row is None:
         return Reply("Den ILIAS-Eintrag gibt es nicht mehr.")
     task_id = tasks.add_task(conn, title=f"ILIAS: {row['title']}"[:200], source="ilias", actor="user",
-                             source_ref=news_id)
+                             source_ref=news_id, area_id=areas.ensure_path(conn, "Uni", actor="user"))
     if task_id is None:
         return Reply("Dazu gibt es schon eine Aufgabe – oder der Titel ist gesperrt (Blacklist).")
     return Reply(f"✅ Aufgabe #{task_id} angelegt: ILIAS: {row['title']}\n"

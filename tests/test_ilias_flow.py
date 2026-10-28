@@ -235,7 +235,7 @@ def test_end_to_end_into_calendar(conn):
     cal, tc, out = FakeCal(), FakeTasks(), Channel()
     seed(cal, tc, 2)
     planning_step(conn, cal, tc, Rules(horizon_days=14), out, NOW)
-    blocks = [e for e in cal.events["planner"].values() if e["summary"].startswith("Abgabe")]
+    blocks = [e for e in cal.events["uni"].values() if e["summary"].startswith("Abgabe")]   # Bereich Uni/…
     assert len(blocks) == 1 and datetime.fromisoformat(blocks[0]["end"]["dateTime"]) <= datetime(2026, 10, 20, 19, 0, tzinfo=TZ)
     assert "Frist: 20.10.2026 19:00" in blocks[0]["description"]
     start, _, _ = slot_of(cal, tc, blocks[0]["summary"])    # Zeitfenster gefunden → Abhak-Kästchen am Anfang des Blockers

@@ -6,6 +6,7 @@ Grundsätze (siehe docs/KONZEPT.md):
 - Heute und morgen bleiben stabil: bestehende Blocker dort werden nur gelöst, wenn sie mit
   einem neuen Termin kollidieren oder ihre Aufgabe erledigt ist.
 - Jede Änderung geht mit Begründung ins Change-Log.
+- Blocker stehen im Kalender ihres Themas (`Rules.topic_calendars`), sonst im Kalender „Planer“.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 
 from . import changelog
-from .areas import weight_of
+from .areas import path_of, weight_of
 from .db import get_meta, set_meta
 from .parsing import deadline_to_dt
 from .rules import TZ, Rules
@@ -74,24 +75,25 @@ def _event_interval(ev: dict) -> Interval | None:
     return _dt(start), _dt(end)
 
 
-def _skip_calendar(cal: dict, planner_id: str, rules: Rules) -> bool:
+def _skip_calendar(cal: dict, rules: Rules) -> bool:
     cid = cal.get("id", "")
     # Feiertage/Geburtstage sind keine Termine. Abonnierte ICS-Kalender (@import…) dagegen schon
     # (z. B. Uni-Kalender) und zählen als belegt.
-    if cid == planner_id or "#holiday@" in cid or "#contacts@" in cid:
+    if "#holiday@" in cid or "#contacts@" in cid:
         return True
     ignored = {n.lower() for n in rules.ignore_calendars}
     return (cal.get("summaryOverride") or cal.get("summary") or "").lower() in ignored
 
 
-def _collect_busy(cal, planner_id: str, rules: Rules, now: datetime, horizon_end: datetime) -> list[Interval]:
+def _collect_busy(cal, rules: Rules, now: datetime, horizon_end: datetime, own: set[str]) -> list[Interval]:
+    """Alles außer unseren eigenen Blockern (`own`) zählt als belegt – auch Termine im Planer- und in den Themen-Kalendern."""
     busy: list[Interval] = []
     for c in cal.list_calendars():
-        if _skip_calendar(c, planner_id, rules):
+        if _skip_calendar(c, rules):
             continue
         for ev in cal.list_events(c["id"], now, horizon_end):
             iv = _event_interval(ev)
-            if iv:
+            if iv and ev.get("id") not in own:
                 busy.append(iv)
     return busy
 
@@ -200,14 +202,14 @@ def run_plan(
     report = PlanReport()
 
     planner_id = cal.ensure_planner_calendar()
-    planner_events = {e["id"]: e for e in cal.list_events(planner_id, now, horizon_end) if "id" in e}
-    _reconcile(conn, planner_events, now, report)
+    block_cals = {planner_id} | {r["calendar_id"] for r in conn.execute(
+        "SELECT DISTINCT calendar_id FROM blocks WHERE state = 'active' AND end > ?", (_iso(now),))}
+    block_events = {e["id"]: e for cid in sorted(block_cals) for e in cal.list_events(cid, now, horizon_end) if "id" in e}
+    _reconcile(conn, block_events, now, report)
     if not dry_run:
         close_elapsed(conn, now, rules.default_estimate_min)
-    busy = _collect_busy(cal, planner_id, rules, now, horizon_end)
-    # Alles im Planer-Kalender, was kein Blocker von uns ist (z. B. bestätigte Termine), zählt als belegt.
     own = {r["gcal_event_id"] for r in conn.execute("SELECT gcal_event_id FROM blocks")}
-    busy += [iv for eid, ev in planner_events.items() if eid not in own and (iv := _event_interval(ev))]
+    busy = _collect_busy(cal, rules, now, horizon_end, own)
 
     tasks = {int(t["id"]): t for t in open_tasks(conn)}
     all_active = conn.execute("SELECT * FROM blocks WHERE state = 'active'").fetchall()
@@ -303,32 +305,55 @@ def run_plan(
     created_at = changelog.now_iso()
 
     for row in deleted:
-        cal.delete_block(row["gcal_event_id"])
+        cal.delete_block(row["calendar_id"], row["gcal_event_id"])
         conn.execute("UPDATE blocks SET state = 'released' WHERE id = ?", (row["id"],))
         conn.commit()
         changelog.log(conn, actor="planner", action="block.deleted", entity="block", entity_id=row["id"],
                       detail={"task_id": row["task_id"], "start": row["start"]},
                       reason=reasons.get(row["id"], "Umplanung"))
     for row, p in moved:
-        cal.update_block(row["gcal_event_id"], title_of(p.task_id), p.start, p.end, task_id=p.task_id,
+        cal.update_block(row["calendar_id"], row["gcal_event_id"], title_of(p.task_id), p.start, p.end, task_id=p.task_id,
                          description=_description(conn, p.task_id))
         conn.execute("UPDATE blocks SET start = ?, end = ? WHERE id = ?", (_iso(p.start), _iso(p.end), row["id"]))
         conn.commit()
         changelog.log(conn, actor="planner", action="block.moved", entity="block", entity_id=row["id"],
                       detail={"task_id": p.task_id, "from": row["start"], "to": _iso(p.start)},
                       reason="Neu geplant (Änderung im Kalender oder neue Aufgabe)")
+    topic_ids: dict[str, str] = {}
+
+    def calendar_of(task_id: int) -> str:
+        row = conn.execute("SELECT area_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        name = rules.topic_calendar(path_of(conn, row["area_id"])) if row else None
+        if name is None:
+            return planner_id
+        if name not in topic_ids:
+            topic_ids[name] = cal.ensure_calendar(name, f"calendar_id:topic:{name.lower()}")
+        return topic_ids[name]
+
     for p in created:
-        ev = cal.create_block(title_of(p.task_id), p.start, p.end, task_id=p.task_id,
+        target = calendar_of(p.task_id)
+        ev = cal.create_block(target, title_of(p.task_id), p.start, p.end, task_id=p.task_id,
                               description=_description(conn, p.task_id))
         cur = conn.execute(
             "INSERT INTO blocks(task_id, start, end, gcal_event_id, calendar_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (p.task_id, _iso(p.start), _iso(p.end), ev["id"], planner_id, created_at),
+            (p.task_id, _iso(p.start), _iso(p.end), ev["id"], target, created_at),
         )
         conn.commit()
         changelog.log(conn, actor="planner", action="block.created", entity="block", entity_id=cur.lastrowid,
                       detail={"task_id": p.task_id, "start": _iso(p.start), "end": _iso(p.end)},
                       reason="Aufgabe eingeplant")
+
+    # Bestehende Blocker (auch gepinnte) in den Kalender ihres Themas umziehen – Zeit bleibt, wie sie ist
+    for row in conn.execute("SELECT * FROM blocks WHERE state = 'active' AND end > ?", (now_iso,)).fetchall():
+        if row["task_id"] not in tasks or (target := calendar_of(row["task_id"])) == row["calendar_id"]:
+            continue
+        cal.move_block(row["calendar_id"], row["gcal_event_id"], target)
+        conn.execute("UPDATE blocks SET calendar_id = ? WHERE id = ?", (target, row["id"]))
+        conn.commit()
+        changelog.log(conn, actor="planner", action="block.relocated", entity="block", entity_id=row["id"],
+                      detail={"task_id": row["task_id"], "from": row["calendar_id"], "to": target},
+                      reason="In den Kalender des Themas verschoben")
     return report
 
 

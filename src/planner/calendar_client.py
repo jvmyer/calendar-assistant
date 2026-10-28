@@ -1,6 +1,6 @@
-"""Google Calendar: eigener Nebenkalender „Planer“ für Blocker.
+"""Google Calendar: Blocker im Kalender ihres Themas (z. B. „Uni“, „Arbeit“), sonst im Nebenkalender „Planer“.
 
-Der Hauptkalender wird nur gelesen (Ausnahme: Vorrat-Einträge aus pool.py werden verschoben).
+Fremde Termine werden nur gelesen (Ausnahme: Vorrat-Einträge aus pool.py werden verschoben).
 Eigene Events sind per `extendedProperties.private` markiert, damit das Tool nie fremde Termine verändert.
 """
 
@@ -112,7 +112,7 @@ class CalendarClient:
             if not page:
                 return events
 
-    # -- Schreiben (nur Planer-Kalender) -----------------------------
+    # -- Schreiben (Blocker im Planer- bzw. Themen-Kalender) ---------
     @staticmethod
     def _block_body(
         title: str, start: datetime, end: datetime, task_id: int, description: str
@@ -126,16 +126,21 @@ class CalendarClient:
         }
 
     def create_block(
-        self, title: str, start: datetime, end: datetime, *, task_id: int, description: str = ""
+        self, calendar_id: str, title: str, start: datetime, end: datetime, *, task_id: int, description: str = ""
     ) -> dict[str, Any]:
         body = self._block_body(title, start, end, task_id, description)
-        return self._svc.events().insert(calendarId=self.ensure_planner_calendar(), body=body).execute()
+        return self.insert_event(calendar_id, body)
 
     def update_block(
-        self, event_id: str, title: str, start: datetime, end: datetime, *, task_id: int, description: str = ""
+        self, calendar_id: str, event_id: str, title: str, start: datetime, end: datetime, *, task_id: int,
+        description: str = "",
     ) -> dict[str, Any]:
         body = self._block_body(title, start, end, task_id, description)
-        return self.update_event(self.ensure_planner_calendar(), event_id, body)
+        return self.update_event(calendar_id, event_id, body)
 
-    def delete_block(self, event_id: str) -> None:
-        self.remove_event(self.ensure_planner_calendar(), event_id)
+    def move_block(self, calendar_id: str, event_id: str, destination: str) -> dict[str, Any]:
+        """Blocker in einen anderen eigenen Kalender umziehen (ID und Zeit bleiben gleich)."""
+        return self._svc.events().move(calendarId=calendar_id, eventId=event_id, destination=destination).execute()
+
+    def delete_block(self, calendar_id: str, event_id: str) -> None:
+        self.remove_event(calendar_id, event_id)

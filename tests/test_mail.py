@@ -152,6 +152,20 @@ def test_task_proposal_and_nothing(conn):
         {"a": "aufgabe", "b": "vorschlag", "c": "nichts"}
 
 
+def test_hka_mail_is_uni_gmail_has_no_area(conn):
+    from planner import areas
+
+    add_mail(conn, "a", "Abgabe")
+    conn.execute("INSERT INTO mails(item_id, received, sender, subject, first_seen, state, source) "
+                 "VALUES ('g', ?, 'Tom', 'Rechnung', 'x', 'new', 'gmail')", (NOW.isoformat(),))
+    conn.commit()
+    verdicts = {"Abgabe": MailVerdict("aufgabe", "Abgabe", "", 60), "Rechnung": MailVerdict("aufgabe", "Rechnung", "", 30)}
+    process_mails(conn, Mailbox(), Model(verdicts), Channel(), NOW)
+    process_mails(conn, Mailbox(), Model(verdicts), Channel(), NOW, source="gmail")
+    got = {r["title"]: areas.path_of(conn, r["area_id"]) for r in conn.execute("SELECT * FROM tasks")}
+    assert got == {"Abgabe": "Uni", "Rechnung": ""}
+
+
 def test_task_without_phrase_uses_rules_on_body_and_never_drops_task(conn):
     add_mail(conn, "a", "Abgabe Blatt 3")
     add_mail(conn, "b", "Rückmeldung")

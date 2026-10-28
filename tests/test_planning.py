@@ -16,15 +16,25 @@ def at(day: int, hh: int, mm: int = 0) -> datetime:
 
 class FakeCal:
     def __init__(self):
-        self.calendars = [{"id": "planner", "summary": "Planer"}, {"id": "main", "summary": "Uni"},
+        self.calendars = [{"id": "planner", "summary": "Planer"}, {"id": "main", "summary": "Kurse"},
+                          {"id": "uni", "summary": "Uni"}, {"id": "arbeit", "summary": "Arbeit"},
                           {"id": "de#holiday@group.v.calendar.google.com", "summary": "Feiertage"}]
-        self.events: dict[str, dict] = {"planner": {}, "main": {}, "de#holiday@group.v.calendar.google.com": {},
+        self.events: dict[str, dict] = {"planner": {}, "main": {}, "uni": {}, "arbeit": {},
+                                        "de#holiday@group.v.calendar.google.com": {},
                                         "primary": {}}   # Hauptkalender: nur Vorrat-Einträge (pool.py)
         self.n = 0
         self.on_patch = None   # test_pool: Google Tasks zieht beim Verschieben das Datum der Task nach
 
     def ensure_planner_calendar(self):
         return "planner"
+
+    def ensure_calendar(self, name, meta_key, description=""):
+        cid = next((c["id"] for c in self.calendars if c["summary"] == name), None)
+        if cid is None:
+            cid = name.lower()
+            self.calendars.append({"id": cid, "summary": name})
+            self.events[cid] = {}
+        return cid
 
     def list_calendars(self):
         return self.calendars
@@ -50,20 +60,23 @@ class FakeCal:
         ev = self.events[cid].get(eid)
         return dict(ev) if ev else None
 
-    def _put(self, eid, title, start, end, description=""):
-        self.events["planner"][eid] = {"id": eid, "summary": title, "description": description,
+    def _put(self, eid, title, start, end, description="", cid="planner"):
+        self.events[cid][eid] = {"id": eid, "summary": title, "description": description,
                                        "start": {"dateTime": start.isoformat()}, "end": {"dateTime": end.isoformat()}}
 
-    def create_block(self, title, start, end, *, task_id, description=""):
+    def create_block(self, cid, title, start, end, *, task_id, description=""):
         self.n += 1
-        self._put(f"e{self.n}", title, start, end, description)
+        self._put(f"e{self.n}", title, start, end, description, cid)
         return {"id": f"e{self.n}"}
 
-    def update_block(self, event_id, title, start, end, *, task_id, description=""):
-        self._put(event_id, title, start, end, description)
+    def update_block(self, cid, event_id, title, start, end, *, task_id, description=""):
+        self._put(event_id, title, start, end, description, cid)
 
-    def delete_block(self, event_id):
-        self.events["planner"].pop(event_id, None)
+    def move_block(self, cid, event_id, destination):
+        self.events[destination][event_id] = self.events[cid].pop(event_id)
+
+    def delete_block(self, cid, event_id):
+        self.events[cid].pop(event_id, None)
 
     def busy(self, start, end, cid="main", **extra):
         self.n += 1
@@ -236,7 +249,8 @@ def test_area_weight_influences_order(env):
     tasks.add_task(conn, title="Privates", source="manual", actor="user", estimate_min=60, area_id=priv)
     tasks.add_task(conn, title="Job", source="manual", actor="user", estimate_min=60, area_id=work)
     run_plan(conn, cal, rules, now=NOW)
-    by_start = sorted(cal.events["planner"].values(), key=lambda e: e["start"]["dateTime"])
+    by_start = sorted([*cal.events["arbeit"].values(), *cal.events["leisure time"].values()],
+                          key=lambda e: e["start"]["dateTime"])
     assert by_start[0]["summary"] == "Job"
 
 
@@ -327,3 +341,47 @@ def test_default_estimate_is_used_for_tasks_without_one(env):
     run_plan(conn, cal, rules, now=NOW)                                   # Standard 60 Min.
     run_plan(conn, cal, rules, now=at(12, 12))
     assert _status(conn, tid) == "done"
+
+
+def test_blocks_go_to_topic_calendar(env):
+    from planner import areas
+
+    conn, cal, rules = env
+    tasks.add_task(conn, title="Übung", source="manual", actor="user", estimate_min=60,
+                   area_id=areas.ensure_path(conn, "Uni/Statistik", actor="user"))
+    tasks.add_task(conn, title="Angebot", source="manual", actor="user", estimate_min=60,
+                   area_id=areas.ensure_path(conn, "arbeit", actor="user"))
+    tasks.add_task(conn, title="Einkaufen", source="manual", actor="user", estimate_min=60)
+    run_plan(conn, cal, rules, now=NOW)
+    titles = {cid: {e["summary"] for e in evs.values()} for cid, evs in cal.events.items() if evs}
+    assert titles == {"uni": {"Übung"}, "arbeit": {"Angebot"}, "planner": {"Einkaufen"}}
+    assert not run_plan(conn, cal, rules, now=NOW).changed   # eigene Blocker zählen nicht als belegt
+
+
+def test_existing_block_moves_to_topic_calendar(env):
+    from planner import areas
+
+    conn, cal, rules = env
+    tid = tasks.add_task(conn, title="Übung", source="manual", actor="user", estimate_min=60)
+    run_plan(conn, cal, rules, now=NOW)
+    (eid,) = cal.events["planner"]
+    conn.execute("UPDATE tasks SET area_id = ? WHERE id = ?", (areas.ensure_path(conn, "Uni", actor="user"), tid))
+    conn.commit()
+    run_plan(conn, cal, rules, now=NOW)
+    assert not cal.events["planner"] and list(cal.events["uni"]) == [eid]   # gleiche Zeit, gleicher Eintrag
+    assert conn.execute("SELECT calendar_id FROM blocks").fetchone()[0] == "uni"
+    run_plan(conn, cal, rules, now=NOW)
+    assert list(cal.events["uni"]) == [eid] and conn.execute(
+        "SELECT state FROM blocks").fetchone()[0] == "active"
+
+
+def test_other_events_in_topic_calendar_count_as_busy(env):
+    from planner import areas
+
+    conn, cal, rules = env
+    cal.busy(at(12, 9), at(12, 10), cid="uni")
+    tasks.add_task(conn, title="Übung", source="manual", actor="user", estimate_min=60,
+                   area_id=areas.ensure_path(conn, "Uni", actor="user"))
+    run_plan(conn, cal, rules, now=NOW)
+    ours = [e for e in cal.events["uni"].values() if e.get("summary") == "Übung"]
+    assert [datetime.fromisoformat(e["start"]["dateTime"]) for e in ours] == [at(12, 10, 15)]

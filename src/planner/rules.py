@@ -25,6 +25,14 @@ class Rules:
     freeze_days: int = 2                  # heute + morgen bleiben stabil
     granularity_min: int = 15             # Blockanfänge liegen auf diesem Raster
     ignore_calendars: tuple[str, ...] = ()  # Kalendernamen, die nicht als „belegt“ zählen
+    # Oberster Bereich → Kalender, in den die Blocker dieses Themas kommen (Farbe = Kalenderfarbe).
+    # Aufgaben ohne passenden Bereich (z. B. Gmail, Telegram ohne #Bereich) bleiben im Kalender „Planer“.
+    topic_calendars: tuple[tuple[str, str], ...] = (("uni", "Uni"), ("arbeit", "Arbeit"), ("privat", "Leisure Time"))
+
+    def topic_calendar(self, area_path: str) -> str | None:
+        """Kalendername für einen Bereichspfad wie „Uni/Modul X“ (nach dem obersten Bereich)."""
+        root = area_path.split("/", 1)[0].strip().lower()
+        return dict(self.topic_calendars).get(root) if root else None
 
 
 def _parse_time(value: str) -> time:
@@ -53,6 +61,8 @@ def load_rules(path: Path) -> Rules:
             raise ValueError(f"Unbekannter Wochentag in weekdays: {exc}") from None
     if "ignore_calendars" in data:
         data["ignore_calendars"] = tuple(data["ignore_calendars"])
+    if "topic_calendars" in data:
+        data["topic_calendars"] = tuple((k.lower(), v) for k, v in data["topic_calendars"].items())
     rules = replace(rules, **data)
     if rules.day_end <= rules.day_start:
         raise ValueError("day_end muss nach day_start liegen")

@@ -14,3 +14,10 @@ granularity_min = 15                # Blockanfänge auf diesem Raster
 # Kalender, die NICHT als „belegt“ zählen (Name wie in Google Kalender).
 # Feiertags- und Geburtstagskalender sowie Ganztägiges/„Frei“-Termine werden automatisch ignoriert.
 ignore_calendars = []
+
+# Blocker landen im Kalender ihres Themas (oberster Bereich, z. B. „#Arbeit“ im Telegram-Text);
+# die Farbe ist die des Kalenders. Ohne passenden Bereich bleiben sie im Kalender „Planer“.
+[topic_calendars]
+Uni = "Uni"
+Arbeit = "Arbeit"
+Privat = "Privat"

@@ -42,3 +42,19 @@ def test_meta_roundtrip(conn):
     set_meta(conn, "k", "v1")
     set_meta(conn, "k", "v2")
     assert get_meta(conn, "k") == "v2"
+
+
+def test_open_hka_and_ilias_tasks_get_uni_area_once(tmp_path):
+    from planner import areas, tasks
+    from planner.db import connect
+
+    conn = connect(tmp_path / "t.db")
+    conn.execute("INSERT INTO mails(item_id, received, first_seen, state, source) VALUES ('h', 'x', 'x', 'done', 'hka')")
+    conn.execute("INSERT INTO mails(item_id, received, first_seen, state, source) VALUES ('g', 'x', 'x', 'done', 'gmail')")
+    for title, source, ref in [("A", "mail", "h"), ("B", "mail", "g"), ("C", "ilias", "n1"), ("D", "telegram", None)]:
+        tasks.add_task(conn, title=title, source=source, source_ref=ref, actor="test")
+    conn.execute("DELETE FROM meta WHERE key = 'migrated:uni_area'")   # wie eine alte Datenbank
+    conn.commit()
+    conn = connect(tmp_path / "t.db")
+    got = {r["title"]: areas.path_of(conn, r["area_id"]) for r in conn.execute("SELECT * FROM tasks")}
+    assert got == {"A": "Uni", "B": "", "C": "Uni", "D": ""}

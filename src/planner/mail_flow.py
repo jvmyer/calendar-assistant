@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 
 import httpx
 
-from . import feedback, proposals, tasks
+from . import areas, feedback, proposals, tasks
 from .bot_logic import fmt_deadline, fmt_minutes
 from .deadlines import Deadline, find_deadlines, resolve_phrase
 from .llm import LlmError, MailVerdict
@@ -35,6 +35,7 @@ log = logging.getLogger("planner.mail")
 MAX_ATTEMPTS = 3
 MAX_ITEMS_PER_RUN = 5    # das Modell braucht ~30 s pro Mail; der Dienstlauf soll nicht ewig blockieren
 HORIZON = timedelta(days=400)
+AREAS = {"hka": "Uni"}    # Mail-Quelle → Bereich
 
 
 class _Retry(Exception):
@@ -91,10 +92,12 @@ def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: dateti
         return res
     res.deadline = find_deadline(verdict, row["subject"] or "", body, posted=posted, now=now)
     ref = row["item_id"]
+    # HKA-Mail ist Uni (landet im Kalender „Uni“); Gmail bleibt ohne Bereich (Kalender „Planer“)
+    area_id = areas.ensure_path(conn, AREAS[row["source"]], actor="mail") if row["source"] in AREAS else None
     note = f"Mail von {row['sender']}: {row['subject']}"[:300]
     if verdict.kind == "aufgabe":
         task_id = tasks.add_task(conn, title=_title(verdict, row["subject"]), source="mail", source_ref=ref,
-                                 actor="mail", deadline=res.deadline, estimate_min=verdict.effort_min)
+                                 actor="mail", area_id=area_id, deadline=res.deadline, estimate_min=verdict.effort_min)
         if task_id is None:   # schon angelegt (Meldung war fehlgeschlagen) – oder der Titel ist gesperrt
             existing = conn.execute("SELECT id FROM tasks WHERE source = 'mail' AND source_ref = ?",
                                     (ref,)).fetchone()
@@ -110,7 +113,7 @@ def analyse(conn: sqlite3.Connection, client, llm, row: sqlite3.Row, now: dateti
     else:
         res.proposal_id = proposals.add_proposal(
             conn, title=_title(verdict, row["subject"]), kind="task", source="mail", source_ref=ref, actor="mail",
-            deadline=res.deadline, estimate_min=verdict.effort_min, note=note)
+            deadline=res.deadline, estimate_min=verdict.effort_min, area_id=area_id, note=note)
     return res
 
 
