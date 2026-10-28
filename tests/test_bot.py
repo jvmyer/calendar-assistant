@@ -4,10 +4,10 @@ from datetime import date, datetime
 import pytest
 
 from planner import blacklist, changelog, proposals, tasks
-from planner.bot_logic import handle_callback, handle_message
+from planner.bot_logic import handle_callback, handle_message, quick_add
 from planner.db import connect
 from planner.quickadd import parse_quick
-from planner.rules import TZ
+from planner.rules import TZ, Rules
 from planner.telegram_bot import TelegramNotifier, quiet_http_loggers
 
 TODAY = date(2026, 10, 13)   # Dienstag
@@ -25,13 +25,43 @@ def conn(tmp_path):
     ("Bericht schreiben bis 20.10. 2h #Uni/Modul-X", "Bericht schreiben", "2026-10-20", 120, "Uni/Modul-X"),
     ("Zahnarzt anrufen bis morgen 16:00 15min", "Zahnarzt anrufen", "2026-10-14T16:00+02:00", 15, None),
     ("Mathe lernen ca. 1,5 h bis freitag", "Mathe lernen", "2026-10-16", 90, None),
-    ("Bis dienstag Steuer machen", "Steuer machen", "2026-10-13", None, None),
+    ("Bis dienstag Steuer machen", "Steuer machen", "2026-10-20", None, None),
     ("Einkaufen", "Einkaufen", None, None, None),
     ("Kapitel 3 lesen muss sein", "Kapitel 3 lesen muss sein", None, None, None),   # „3 m…“ ist kein Aufwand
 ])
 def test_parse_quick(text, title, deadline, est, area):
     q = parse_quick(text, today=TODAY)
     assert (q.title, q.deadline, q.estimate_min, q.area) == (title, deadline, est, area)
+
+
+@pytest.mark.parametrize("text,title,deadline,not_before", [   # TODAY = Di 13.10.2026
+    ("Bericht schreiben morgen", "Bericht schreiben", "2026-10-14", "2026-10-14"),          # an dem Tag erledigen
+    ("morgen Zahnarzt anrufen um 14 Uhr", "Zahnarzt anrufen", "2026-10-14T14:00+02:00", "2026-10-14"),
+    ("Bericht am Freitag", "Bericht", "2026-10-16", "2026-10-16"),
+    ("Bericht am 20.10.", "Bericht", "2026-10-20", "2026-10-20"),
+    ("Bericht bis morgen", "Bericht", "2026-10-14", None),                                   # Frist, früher erlaubt
+    ("Bericht bis zum 20.10. 14 Uhr", "Bericht", "2026-10-20T14:00+02:00", None),
+    ("Bericht bis 20.10", "Bericht", "2026-10-20", None),
+    ("Bericht Frist 20.10.", "Bericht", "2026-10-20", None),
+    ("Kapitel 3.2 lesen", "Kapitel 3.2 lesen", None, None),                                  # keine Zahl als Datum
+    ("Morgenroutine planen", "Morgenroutine planen", None, None),
+])
+def test_parse_quick_day_words(text, title, deadline, not_before):
+    q = parse_quick(text, today=TODAY)
+    assert (q.title, q.deadline, q.not_before) == (title, deadline, not_before)
+
+
+def test_quick_add_morgen_is_planned_tomorrow_not_today(conn):
+    from planner.planning import run_plan
+    from test_planning import FakeCal, at
+
+    now = at(13, 9)
+    reply = quick_add(conn, "Bericht schreiben morgen 1h", now=now)
+    assert "am 14.10." in reply.text
+    cal = FakeCal()
+    run_plan(conn, cal, Rules(horizon_days=7), now=now)
+    [block] = cal.events["planner"].values()
+    assert block["start"]["dateTime"].startswith("2026-10-14")
 
 
 def test_parse_quick_needs_title():

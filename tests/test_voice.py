@@ -64,6 +64,17 @@ def test_voice_preview_then_accept(conn):
     assert "Schon erledigt" in handle_callback(conn, "vo:1:ok").text   # kein Doppelanlegen
 
 
+@pytest.mark.parametrize("copied", ["morgen", ""])   # Modell kopiert „morgen“ – oder lässt es weg
+def test_voice_morgen_means_tomorrow(conn, copied):
+    spoken = "Morgen muss ich den Bericht schreiben"
+    handle_voice(conn, Ears(spoken), Brain(SpokenTask("Bericht schreiben", copied, 60, "mittel", "")), b"ogg",
+                 duration=4, message_id=7, now=NOW)
+    r = handle_callback(conn, "vo:1:ok")
+    assert "am 17.10." in r.text
+    t = conn.execute("SELECT deadline, not_before FROM tasks").fetchone()
+    assert (t["deadline"], t["not_before"]) == ("2026-10-17", "2026-10-17")
+
+
 def test_voice_reject(conn):
     handle_voice(conn, Ears("Irgendwas"), Brain(SpokenTask("x", "", None, "mittel", "")), b"", duration=3,
                  message_id=1, now=NOW)

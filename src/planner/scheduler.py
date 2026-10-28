@@ -28,6 +28,7 @@ class TaskInput:
     deadline: datetime | None = None
     weight: float = 1.0
     boost: float = 1.0
+    not_before: datetime | None = None   # frühester Start (Tagesbeginn), z. B. „morgen erledigen“
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,7 @@ def _available_before(free: list[Interval], now: datetime, deadline: datetime) -
 def urgency(task: TaskInput, free: list[Interval], now: datetime) -> float:
     if task.deadline is None:
         return 1.0
-    avail = _available_before(free, now, task.deadline)
+    avail = _available_before(free, max(now, task.not_before or now), task.deadline)
     if avail <= 0:
         return 5.0
     return 1.0 + 4.0 * min(1.0, task.remaining_min / avail)
@@ -178,6 +179,9 @@ def schedule(tasks: list[TaskInput], free: list[Interval], rules: Rules, now: da
     result = ScheduleResult()
     scores = {t.id: score(t, free, now) for t in tasks}
     windows = [list(w) for w in free]
+    for cut in sorted({t.not_before for t in tasks if t.not_before is not None}):   # Fenster am Starttag teilen
+        windows = [part for s, e in windows
+                   for part in ([[s, cut], [cut, e]] if s < cut < e else [[s, e]])]
     per_day: dict[tuple[int, object], int] = defaultdict(int)
     pad = timedelta(minutes=rules.buffer_min)
     # Scores innerhalb von 0,25 gelten als gleich; dann entscheidet die frühere Deadline.
@@ -201,6 +205,8 @@ def schedule(tasks: list[TaskInput], free: list[Interval], rules: Rules, now: da
                 break
             if limit is not None and w[0] >= limit:
                 break
+            if task.not_before is not None and w[0] < task.not_before:
+                continue
             cap_end = min(w[1], limit) if limit is not None else w[1]
             length = minutes(w[0], cap_end)
             day = w[0].astimezone(TZ).date()

@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source        TEXT NOT NULL,            -- telegram | mail | ilias | manual ...
     source_ref    TEXT,                     -- z. B. Mail-ID, zur Deduplizierung
     deadline      TEXT,                     -- ISO 8601
+    not_before    TEXT,                     -- frühester Tag (ISO-Datum), z. B. „morgen erledigen“
     estimate_min  INTEGER,                  -- geschätzter Aufwand (Minuten)
     actual_min    INTEGER,                  -- tatsächlicher Aufwand (fürs Lernen)
     priority_boost REAL NOT NULL DEFAULT 1.0,
@@ -95,6 +96,7 @@ CREATE TABLE IF NOT EXISTS voice_notes (
     transcript   TEXT,
     title        TEXT NOT NULL,
     deadline     TEXT,
+    not_before   TEXT,
     estimate_min INTEGER,
     priority     TEXT NOT NULL DEFAULT 'mittel',
     area         TEXT,
@@ -241,6 +243,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "thread_id" not in cols:
         conn.execute("ALTER TABLE mails ADD COLUMN thread_id TEXT")
         conn.commit()
+    for table in ("tasks", "voice_notes"):
+        if "not_before" not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN not_before TEXT")
+            conn.commit()
 
 
 

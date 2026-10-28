@@ -54,10 +54,19 @@ def fmt_deadline(value: str) -> str:
     return datetime.fromisoformat(value).astimezone(TZ).strftime("%d.%m. %H:%M")
 
 
+def fmt_when(deadline: str | None, not_before: str | None) -> str:
+    """„am 29.10.“ (an dem Tag erledigen), „bis 30.10. 14:00“ (Frist) oder „ohne Frist“."""
+    if not_before and deadline and deadline[:10] == not_before:
+        return f"am {fmt_deadline(deadline)}"
+    parts = [f"ab {fmt_deadline(not_before)}"] if not_before else []
+    parts += [f"bis {fmt_deadline(deadline)}"] if deadline else []
+    return " ".join(parts) or "ohne Frist"
+
+
 def _task_line(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
     bits = [f"#{row['id']} {row['title']}"]
-    if row["deadline"]:
-        bits.append(f"bis {fmt_deadline(row['deadline'])}")
+    if row["deadline"] or row["not_before"]:
+        bits.append(fmt_when(row["deadline"], row["not_before"]))
     if row["estimate_min"]:
         bits.append(fmt_minutes(row["estimate_min"]))
     area = areas.path_of(conn, row["area_id"])
@@ -300,7 +309,7 @@ def quick_add(
     area_id = areas.ensure_path(conn, q.area, actor="user") if q.area else None
     task_id = tasks.add_task(
         conn, title=q.title, source="telegram", actor="user", area_id=area_id, deadline=q.deadline,
-        estimate_min=q.estimate_min, source_ref=f"msg:{message_id}" if message_id else None)
+        not_before=q.not_before, estimate_min=q.estimate_min, source_ref=f"msg:{message_id}" if message_id else None)
     if task_id is None:
         return Reply("Diese Nachricht hatte ich schon als Aufgabe angelegt – oder der Titel ist gesperrt (Blacklist).")
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()

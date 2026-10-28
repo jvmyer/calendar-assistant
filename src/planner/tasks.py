@@ -18,6 +18,7 @@ def add_task(
     area_id: int | None = None,
     deadline: str | None = None,
     estimate_min: int | None = None,
+    not_before: str | None = None,
 ) -> int | None:
     """Legt eine Aufgabe an. Gibt None zurück, wenn (source, source_ref) schon existiert
     oder der Titel auf der Blacklist steht (siehe `blacklist.py`)."""
@@ -26,9 +27,9 @@ def add_task(
     ts = now_iso()
     try:
         cur = conn.execute(
-            "INSERT INTO tasks(title, area_id, source, source_ref, deadline, estimate_min, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (title, area_id, source, source_ref, deadline, estimate_min, ts, ts),
+            "INSERT INTO tasks(title, area_id, source, source_ref, deadline, not_before, estimate_min, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (title, area_id, source, source_ref, deadline, not_before, estimate_min, ts, ts),
         )
     except sqlite3.IntegrityError:
         return None
@@ -40,7 +41,8 @@ def add_task(
         action="task.created",
         entity="task",
         entity_id=task_id,
-        detail={"title": title, "source": source, "deadline": deadline, "estimate_min": estimate_min},
+        detail={"title": title, "source": source, "deadline": deadline, "not_before": not_before,
+                "estimate_min": estimate_min},
     )
     return task_id
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 from . import changelog
 from .areas import weight_of
@@ -248,6 +248,7 @@ def run_plan(
             title=t["title"],
             remaining_min=remaining,
             deadline=deadline_to_dt(t["deadline"]) if t["deadline"] else None,
+            not_before=datetime.combine(date.fromisoformat(t["not_before"]), time(0), TZ) if t["not_before"] else None,
             weight=weight_of(conn, t["area_id"]),
             boost=float(t["priority_boost"]),
         ))

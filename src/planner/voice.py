@@ -46,11 +46,23 @@ class Transcriber:
         return " ".join(s.text.strip() for s in segments).strip()
 
 
-def _deadline(task: SpokenTask, now: datetime) -> str | None:
-    d = resolve_phrase(task.deadline_text, posted=now, now=now)
-    if d is None:
-        return None
-    return d.when.date().isoformat() if d.date_only else d.when.isoformat(timespec="minutes")
+def _when(task: SpokenTask, transcript: str, now: datetime) -> tuple[str | None, str | None]:
+    """(Frist, frühester Tag). Erst die Regeln der Textnachricht (kennen „morgen“ ohne „bis“), dann die der
+    Mails; hat das Modell keine Stelle kopiert, wird der Wortlaut selbst durchsucht (Nutzer 2026-10-28:
+    „morgen“ wurde für heute eingeplant)."""
+    from .quickadd import parse_when
+
+    today = now.astimezone(TZ).date()
+    for text in (task.deadline_text, transcript):
+        if not text:
+            continue
+        deadline, not_before, _spans = parse_when(text, today=today)
+        if deadline:
+            return deadline, not_before
+        d = resolve_phrase(text, posted=now, now=now)
+        if d is not None:
+            return (d.when.date().isoformat() if d.date_only else d.when.isoformat(timespec="minutes")), None
+    return None, None
 
 
 def understand(llm, text: str, conn: sqlite3.Connection, now: datetime) -> dict:
@@ -58,7 +70,8 @@ def understand(llm, text: str, conn: sqlite3.Connection, now: datetime) -> dict:
     known = [areas.path_of(conn, i) for _d, i, _n, _w in areas.tree(conn)]
     try:
         t = llm.extract_spoken_task(text, today=now.astimezone(TZ).date(), areas=known)
-        return {"title": t.title, "deadline": _deadline(t, now), "estimate_min": t.effort_min,
+        deadline, not_before = _when(t, text, now)
+        return {"title": t.title, "deadline": deadline, "not_before": not_before, "estimate_min": t.effort_min,
                 "priority": t.priority, "area": t.area or None}
     except LlmError as exc:
         log.warning("Modell nicht verfügbar (%s) – lese die Sprachnachricht wie Text", exc)
@@ -67,26 +80,27 @@ def understand(llm, text: str, conn: sqlite3.Connection, now: datetime) -> dict:
         try:
             q = parse_quick(text, today=now.astimezone(TZ).date())
         except ValueError:
-            return {"title": text[:120], "deadline": None, "estimate_min": None, "priority": "mittel", "area": None}
-        return {"title": q.title, "deadline": q.deadline, "estimate_min": q.estimate_min, "priority": "mittel",
-                "area": q.area}
+            return {"title": text[:120], "deadline": None, "not_before": None, "estimate_min": None,
+                    "priority": "mittel", "area": None}
+        return {"title": q.title, "deadline": q.deadline, "not_before": q.not_before, "estimate_min": q.estimate_min,
+                "priority": "mittel", "area": q.area}
 
 
 def save_pending(conn: sqlite3.Connection, transcript: str, fields: dict, message_id: int | None) -> int:
     cur = conn.execute(
-        "INSERT INTO voice_notes(message_id, transcript, title, deadline, estimate_min, priority, area, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (message_id, transcript, fields["title"], fields["deadline"], fields["estimate_min"], fields["priority"],
-         fields["area"], now_iso()))
+        "INSERT INTO voice_notes(message_id, transcript, title, deadline, not_before, estimate_min, priority, area, "
+        "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (message_id, transcript, fields["title"], fields["deadline"], fields.get("not_before"), fields["estimate_min"],
+         fields["priority"], fields["area"], now_iso()))
     conn.commit()
     return int(cur.lastrowid)
 
 
 def preview(conn: sqlite3.Connection, note_id: int) -> tuple[str, Buttons]:
-    from .bot_logic import fmt_deadline, fmt_minutes
+    from .bot_logic import fmt_minutes, fmt_when
 
     n = conn.execute("SELECT * FROM voice_notes WHERE id = ?", (note_id,)).fetchone()
-    when = f"bis {fmt_deadline(n['deadline'])}" if n["deadline"] else "ohne Frist"
+    when = fmt_when(n["deadline"], n["not_before"])
     effort = fmt_minutes(n["estimate_min"]) if n["estimate_min"] else "?"
     lines = [f"🎙️ „{n['transcript']}“", "",
              f"➕ {n['title']}",
@@ -125,7 +139,8 @@ def decide(conn: sqlite3.Connection, note_id: int, accept: bool) -> tuple[str, B
         return f"❌ Verworfen: „{n['transcript']}“", [], False
     area_id = areas.ensure_path(conn, n["area"], actor="user") if n["area"] else None
     task_id = tasks.add_task(conn, title=n["title"], source="voice", source_ref=f"voice:{note_id}", actor="user",
-                             area_id=area_id, deadline=n["deadline"], estimate_min=n["estimate_min"])
+                             area_id=area_id, deadline=n["deadline"], not_before=n["not_before"],
+                             estimate_min=n["estimate_min"])
     if task_id is None:
         return "Dazu gibt es schon eine Aufgabe – oder der Titel ist gesperrt (Blacklist).", [], False
     if n["priority"] != "mittel":
