@@ -36,7 +36,6 @@ def test_parse_quick(text, title, deadline, est, area):
 
 @pytest.mark.parametrize("text,title,deadline,not_before", [   # TODAY = Di 13.10.2026
     ("Bericht schreiben morgen", "Bericht schreiben", "2026-10-14", "2026-10-14"),          # an dem Tag erledigen
-    ("morgen Zahnarzt anrufen um 14 Uhr", "Zahnarzt anrufen", "2026-10-14T14:00+02:00", "2026-10-14"),
     ("Bericht am Freitag", "Bericht", "2026-10-16", "2026-10-16"),
     ("Bericht am 20.10.", "Bericht", "2026-10-20", "2026-10-20"),
     ("Bericht bis morgen", "Bericht", "2026-10-14", None),                                   # Frist, früher erlaubt
@@ -62,6 +61,66 @@ def test_quick_add_morgen_is_planned_tomorrow_not_today(conn):
     run_plan(conn, cal, Rules(horizon_days=7), now=now)
     [block] = cal.events["planner"].values()
     assert block["start"]["dateTime"].startswith("2026-10-14")
+
+
+@pytest.mark.parametrize("text,title,start,end", [   # TODAY = Di 13.10.2026; Uhrzeit ohne „bis“ = fester Block
+    ("Zahnarzt morgen von 16:30 bis 17:30", "Zahnarzt", "2026-10-14T16:30+02:00", "2026-10-14T17:30+02:00"),
+    ("Zahnarzt morgen 16:30 bis 17:30", "Zahnarzt", "2026-10-14T16:30+02:00", "2026-10-14T17:30+02:00"),
+    ("Meeting 16:30-17:30 #Arbeit", "Meeting", "2026-10-13T16:30+02:00", "2026-10-13T17:30+02:00"),  # ohne Tag: heute
+    ("Training am Freitag von 18 bis 19 Uhr", "Training", "2026-10-16T18:00+02:00", "2026-10-16T19:00+02:00"),
+    ("morgen Zahnarzt anrufen um 14 Uhr", "Zahnarzt anrufen", "2026-10-14T14:00+02:00", "2026-10-14T15:00+02:00"),
+    ("Termin morgen um 16:30 30min", "Termin", "2026-10-14T16:30+02:00", "2026-10-14T17:00+02:00"),
+])
+def test_parse_quick_fixed_slot(text, title, start, end):
+    q = parse_quick(text, today=TODAY)
+    assert (q.title, q.start, q.end, q.deadline, q.not_before) == (title, start, end, None, None)
+
+
+def test_parse_quick_deadline_with_time_is_no_slot():
+    q = parse_quick("Bericht bis morgen 16:30", today=TODAY)
+    assert (q.deadline, q.start) == ("2026-10-14T16:30+02:00", None)
+    with pytest.raises(ValueError):
+        parse_quick("Zahnarzt morgen von 17:30 bis 16:30", today=TODAY)
+
+
+def test_quick_add_fixed_slot_is_planned_exactly_then_and_never_moved(conn):
+    from planner.planning import run_plan
+    from test_planning import FakeCal, at
+
+    now = at(13, 9)
+    reply = quick_add(conn, "Zahnarzt morgen von 16:30 bis 17:30", now=now)
+    assert "fest Mi 14.10. 16:30–17:30" in reply.text
+    cal = FakeCal()
+    cal.busy(at(14, 16), at(14, 18))   # auch wenn dort schon etwas steht: der Nutzer hat die Zeit genannt
+    run_plan(conn, cal, Rules(horizon_days=7), now=now)
+    [block] = cal.events["planner"].values()
+    assert (block["start"]["dateTime"], block["end"]["dateTime"]) == (at(14, 16, 30).isoformat(), at(14, 17, 30).isoformat())
+    assert conn.execute("SELECT pinned FROM blocks").fetchone()[0] == 1
+    assert not run_plan(conn, cal, Rules(horizon_days=7), now=now).changed
+
+
+def test_area_button_and_command_move_block_to_topic_calendar(conn):
+    from planner import areas
+    from planner.planning import run_plan
+    from test_planning import FakeCal, at
+
+    now = at(13, 9)
+    reply = quick_add(conn, "Kaffee mit Familie morgen um 16 Uhr", now=now)
+    assert reply.buttons[1] == [("🎓 Uni", "ar:1:uni"), ("💼 Arbeit", "ar:1:arbeit"), ("🌿 Privat", "ar:1:privat"),
+                                ("✓ 🔵 Planer", "ar:1:keiner")]
+    assert "📅 Kalender: Planer" in reply.text
+    cal = FakeCal()
+    run_plan(conn, cal, Rules(horizon_days=7), now=now)
+    assert len(cal.events["planner"]) == 1
+    r = handle_callback(conn, "ar:1:privat")
+    assert r.changed and "#Privat" in r.text and "📅 Kalender: Leisure Time" in r.text
+    assert ("✓ 🌿 Privat", "ar:1:privat") in r.buttons[0]   # Buttons bleiben: noch umentscheiden möglich
+    run_plan(conn, cal, Rules(horizon_days=7), now=now)
+    assert not cal.events["planner"] and len(cal.events["leisure time"]) == 1
+    r = handle_message(conn, "/bereich 1 keiner", now=now)
+    assert conn.execute("SELECT area_id FROM tasks").fetchone()[0] is None and "ohne Bereich" in r.text
+    assert "gibt es nicht" in handle_message(conn, "/bereich 99 Uni", now=now).text
+    assert areas.find_path(conn, "Privat") is not None
 
 
 def test_parse_quick_needs_title():

@@ -7,7 +7,12 @@ Erkannt werden ein Termin, ein Aufwand (`2h`, `90min`, `1,5 h`) und ein Bereich 
 der Titel. Beim Termin zählt das „bis“ (Nutzer 2026-10-28: „morgen“ hieß bisher gar nichts):
 
 - `bis [zum] <Tag> [um] [Uhrzeit]` (auch „Frist“, „fällig am“) → Frist, darf auch früher erledigt werden
-- `[am] <Tag> [um] [Uhrzeit]` ohne „bis“ → an diesem Tag erledigen: frühestens dann, Frist am Tagesende
+- `[am] <Tag>` ohne „bis“ und ohne Uhrzeit → an diesem Tag erledigen: frühestens dann, Frist am Tagesende
+- `[am] <Tag> [um] <Uhrzeit>` ohne „bis“ → fester Zeitblock ab dieser Uhrzeit (Dauer = Aufwand, sonst 1 h)
+- `[<Tag>] [von] 16:30 bis 17:30` bzw. `16:30–17:30`, `16 bis 18 Uhr` → fester Zeitblock genau dann (ohne Tag: heute)
+
+Feste Zeitblöcke plant der Planer nicht um (Nutzer 2026-10-28: „um 16:30“ wurde als Frist gelesen und früher
+eingeplant, „von 16:30 bis 17:30“ gar nicht erkannt).
 
 <Tag> = heute, morgen, übermorgen, [nächsten] Wochentag, 30.10.[2026] (ohne „am“/„bis“ nur mit Punkt am Ende).
 Uhrzeit = 14:00, 14.00, 14 Uhr, 14:30 Uhr.
@@ -39,6 +44,14 @@ _ON_DAY = re.compile(     # ohne „bis“: Datum nur mit Schlusspunkt oder nach
 )
 _LOOSE_TIME = re.compile(   # Uhrzeit irgendwo im Satz („morgen Zahnarzt anrufen um 14 Uhr“)
     r"(?:\bum\s+)?\b(?P<time>\d{1,2}(?:[:.]\d{2})?\s*uhr)\b|\bum\s+(?P<time2>\d{1,2}[:.]\d{2})\b", re.IGNORECASE)
+_HOUR = r"\d{1,2}(?:[:.]\d{2})?"
+_RANGE = re.compile(   # „von 16 bis 17 Uhr“, „16:30 bis 17:30“, „16:30-17:30 Uhr“, „16 bis 18 Uhr“ – ohne „von“
+    # braucht der Beginn Minuten/„Uhr“ oder das Ende ein „Uhr“
+    r"(?:\bvon\s+(?P<a>" + _HOUR + r")|\b(?P<a2>\d{1,2}(?:[:.]\d{2}|\s*uhr)))\s*(?:uhr\s*)?(?:bis|-|–)\s*"
+    r"(?P<b>" + _HOUR + r")(?![\d.])(?:\s*uhr\b)?"
+    r"|(?<![\d.:])\b(?P<a3>\d{1,2})\s*(?:bis|-|–)\s*(?P<b3>" + _HOUR + r")\s*uhr\b",
+    re.IGNORECASE,
+)
 _ESTIMATE = re.compile(r"(?:\b(?:ca\.?|circa|ungefähr)\s*)?\b(\d+(?:[.,]\d+)?)\s*(h|std|min|m)\b", re.IGNORECASE)
 _AREA = re.compile(r"(?:^|\s)#([^\s#]+)")
 
@@ -50,6 +63,8 @@ class QuickTask:
     estimate_min: int | None = None
     area: str | None = None
     not_before: str | None = None   # frühester Tag (ISO-Datum), nur bei „morgen“/„am Freitag“ ohne „bis“
+    start: str | None = None        # fester Zeitblock (ISO mit Uhrzeit), dann ohne Frist
+    end: str | None = None
 
 
 def _word_to_date(word: str, today: date) -> date:
@@ -101,6 +116,30 @@ def parse_when(text: str, *, today: date) -> tuple[str | None, str | None, list[
     return deadline, (day.isoformat() if on_day else None), spans
 
 
+def _blank(text: str, spans: list[tuple[int, int]]) -> str:
+    for a, b in sorted(spans, reverse=True):
+        text = text[:a] + " " * (b - a) + text[b:]
+    return text
+
+
+def parse_slot(text: str, *, today: date) -> tuple[datetime, datetime | None, list[tuple[int, int]]] | None:
+    """Fester Zeitblock im Text → (Beginn, Ende oder None = Dauer offen, Fundstellen); None = keiner."""
+    if m := _RANGE.search(text):
+        deadline, not_before, spans = parse_when(_blank(text, [m.span()]), today=today)
+        day = date.fromisoformat((not_before or deadline or today.isoformat())[:10])
+        a, b = _clock(m.group("a") or m.group("a2") or m.group("a3")), _clock(m.group("b") or m.group("b3"))
+        if a is None or b is None:
+            return None
+        start, end = (datetime.combine(day, datetime.strptime(x, "%H:%M").time(), TZ) for x in (a, b))
+        if end <= start:
+            raise ValueError("Das Ende liegt vor dem Beginn. Beispiel: Zahnarzt morgen von 16:30 bis 17:30")
+        return start, end, [m.span(), *spans]
+    deadline, not_before, spans = parse_when(text, today=today)
+    if not_before and deadline and "T" in deadline:   # „morgen um 16:30“: dann, nicht vorher
+        return datetime.fromisoformat(deadline), None, spans
+    return None
+
+
 def parse_quick(text: str, *, today: date | None = None) -> QuickTask:
     today = today or datetime.now(TZ).date()
     work = text.strip()
@@ -110,13 +149,21 @@ def parse_quick(text: str, *, today: date | None = None) -> QuickTask:
         task.area = m.group(1)
         work = work[: m.start()] + " " + work[m.end():]
 
-    task.deadline, task.not_before, spans = parse_when(work, today=today)
-    for a, b in sorted(spans, reverse=True):
-        work = work[:a] + " " + work[b:]
+    start = end = None
+    if slot := parse_slot(work, today=today):
+        start, end, spans = slot
+    else:
+        task.deadline, task.not_before, spans = parse_when(work, today=today)
+    work = _blank(work, spans)
 
     if m := _ESTIMATE.search(work):
         task.estimate_min = parse_estimate(f"{m.group(1)}{m.group(2)}")
         work = work[: m.start()] + " " + work[m.end():]
+
+    if start is not None:
+        end = end or start + timedelta(minutes=task.estimate_min or 60)
+        task.start, task.end = start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")
+        task.estimate_min = int((end - start).total_seconds() // 60)
 
     task.title = re.sub(r"\s+", " ", work).strip(" ,;:-–")[:MAX_TITLE]
     if not task.title:

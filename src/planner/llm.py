@@ -60,11 +60,17 @@ SCHEMA = {
 
 SPOKEN = """Jonah hat seinem Planer eine Sprachnachricht geschickt (automatisch transkribiert, kann Hörfehler enthalten).
 Heute ist {today}. Mach daraus genau eine Aufgabe.
-title: kurzer Titel auf Deutsch (max. 6 Wörter), was zu tun ist.
-deadline_text: die Stelle, die die Frist nennt, WÖRTLICH kopiert (z. B. "bis Freitag", "bis zum 20.10."), sonst leer. Nichts umrechnen.
-effort_min: genannter oder geschätzter Aufwand in Minuten ("zwei Stunden" = 120); ohne Hinweis eine vernünftige Schätzung.
-priority: "hoch", "mittel" oder "niedrig" – wie Jonah es sagt ("wichtig", "dringend" = hoch; "irgendwann", "nicht so wichtig" = niedrig), sonst "mittel".
-area: passender Bereich aus dieser Liste, sonst leer: {areas}"""
+title: WAS zu tun ist, 1 bis 5 Wörter, wie ein Eintrag im Kalender: Sache + Tätigkeit im Infinitiv ("Mama anrufen", "Übungsblatt 3 abgeben") oder nur die Sache bei Terminen ("Zahnarzt", "Kaffee mit Familie").
+Der Titel enthält NIE: Datum, Wochentag, Uhrzeit, Dauer, Bereich (Uni, Arbeit, privat), Wichtigkeit, Füllwörter (ähm, also, okay, noch, mal, bitte) und Wörter an den Planer (anlegen, eintragen, notieren, erinnern, Termin, Aufgabe, ich muss, kannst du).
+Offensichtliche Hörfehler im Titel korrigieren ("Café mit Familie" → "Kaffee mit Familie").
+Beispiele:
+"Ähm trag mal ein, morgen um 9 Steuerberater anrufen, ist wichtig" → "Steuerberater anrufen"
+"Ich muss bis Freitag noch das Übungsblatt für Mathe abgeben, so zwei Stunden" → "Mathe-Übungsblatt abgeben"
+"Kaffee mit Oma am Sonntag von 15 bis 17 Uhr anlegen" → "Kaffee mit Oma"
+"Erinnere mich, dass ich nächste Woche die Präsentation für die Arbeit vorbereite" → "Präsentation vorbereiten"
+deadline_text: die Stelle mit Tag oder Frist, WÖRTLICH aus der Nachricht kopiert (z. B. "bis Freitag", "morgen", "am 20.10."), sonst leer. Nichts umrechnen, nichts erfinden.
+effort_min: genannte Dauer in Minuten ("zwei Stunden" = 120); ohne Angabe eine vernünftige Schätzung.
+area: NUR wenn Jonah den Bereich ausdrücklich nennt (z. B. "für die Uni", "privat", "Arbeit"), der passende aus dieser Liste; sonst leer – nicht raten: {areas}"""
 
 
 @dataclass(frozen=True)
@@ -72,7 +78,6 @@ class SpokenTask:
     title: str
     deadline_text: str
     effort_min: int | None
-    priority: str
     area: str
 
 
@@ -157,10 +162,9 @@ class OllamaClient:
                 "title": {"type": "string"},
                 "deadline_text": {"type": "string"},
                 "effort_min": {"type": "integer"},
-                "priority": {"type": "string", "enum": list(PRIOS)},
                 "area": {"type": "string", "enum": ["", *areas]},
             },
-            "required": ["title", "deadline_text", "effort_min", "priority", "area"],
+            "required": ["title", "deadline_text", "effort_min", "area"],
         }
         system = SPOKEN.format(today=today_text(today), areas=", ".join(areas) or "(keine)")
         content = self._chat(system, text[:MAX_BODY], schema)
@@ -175,11 +179,9 @@ class OllamaClient:
             effort = int(data.get("effort_min") or 0)
         except (ValueError, TypeError):
             effort = 0
-        prio = str(data.get("priority") or "").lower()
         area = str(data.get("area") or "")
         return SpokenTask(title=title, deadline_text=str(data.get("deadline_text") or "").strip()[:200],
-                          effort_min=effort if 0 < effort <= 24 * 60 else None,
-                          priority=prio if prio in PRIOS else "mittel", area=area if area in areas else "")
+                          effort_min=effort if 0 < effort <= 24 * 60 else None, area=area if area in areas else "")
 
     def _chat(self, system: str, user: str, schema: dict) -> str:
         payload = {"model": self._model, "stream": False, "think": False, "format": schema, "options": OPTIONS,

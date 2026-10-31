@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 from . import areas, blacklist, changelog, feedback, proposals, tasks, voice
 from .quickadd import parse_quick
-from .rules import TZ
+from .rules import TZ, Rules
 
 Buttons = list[list[tuple[str, str]]]   # Zeilen aus (Beschriftung, callback_data)
 
@@ -27,6 +27,7 @@ HELP = (
     "/erledigt <Nr> · /verwerfen <Nr>\n"
     "/frist <Nr> <Datum|keine> – z. B. /frist 3 20.10. 18:00\n"
     "/aufwand <Nr> <2h|45min>\n"
+    "/bereich <Nr> <Uni|Arbeit|Privat|keiner> – bestimmt den Kalender (oder Buttons unter der Aufgabe)\n"
     "/sperren <Nr> – Titel auf die Blacklist: wird nie wieder automatisch angelegt\n"
     "/sperrliste – zeigt die Blacklist (mit Buttons zum Entfernen)\n"
     "/ilias – neueste ILIAS-Neuigkeiten\n"
@@ -63,16 +64,62 @@ def fmt_when(deadline: str | None, not_before: str | None) -> str:
     return " ".join(parts) or "ohne Frist"
 
 
+def fmt_slot(start: str, end: str) -> str:
+    """„fest Do 29.10. 16:30–17:30“"""
+    s, e = (datetime.fromisoformat(x).astimezone(TZ) for x in (start, end))
+    return f"fest {('Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So')[s.weekday()]} {s:%d.%m. %H:%M}–{e:%H:%M}"
+
+
 def _task_line(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
     bits = [f"#{row['id']} {row['title']}"]
-    if row["deadline"] or row["not_before"]:
+    if row["fixed_start"]:
+        bits.append(fmt_slot(row["fixed_start"], row["fixed_end"]))
+    elif row["deadline"] or row["not_before"]:
         bits.append(fmt_when(row["deadline"], row["not_before"]))
-    if row["estimate_min"]:
+    if row["estimate_min"] and not row["fixed_start"]:
         bits.append(fmt_minutes(row["estimate_min"]))
     area = areas.path_of(conn, row["area_id"])
     if area:
         bits.append(f"#{area}")
     return " · ".join(bits)
+
+
+AREA_CHOICES = {"uni": ("🎓 Uni", "Uni"), "arbeit": ("💼 Arbeit", "Arbeit"), "privat": ("🌿 Privat", "Privat"),
+                "keiner": ("🔵 Planer", None)}
+
+
+def _area_path(conn: sqlite3.Connection, task_id: int) -> str:
+    row = conn.execute("SELECT area_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return areas.path_of(conn, row["area_id"]) if row else ""
+
+
+def area_buttons(conn: sqlite3.Connection, task_id: int) -> list[tuple[str, str]]:
+    """Kalender mit einem Tipp wählen (Uni/Arbeit/Leisure Time/Planer); die aktuelle Wahl trägt ein ✓."""
+    root = _area_path(conn, task_id).split("/", 1)[0].lower() or "keiner"
+    return [(("✓ " if key == root else "") + label, f"ar:{task_id}:{key}") for key, (label, _p) in AREA_CHOICES.items()]
+
+
+def calendar_line(conn: sqlite3.Connection, task_id: int) -> str:
+    name = Rules().topic_calendar(_area_path(conn, task_id)) or "Planer"
+    return f"📅 Kalender: {name} – unten tippen, um ihn zu ändern"
+
+
+def _set_area(conn: sqlite3.Connection, arg: str) -> Reply:
+    """/bereich <Nr> <Bereich|keiner> bzw. Button „ar:<Nr>:<uni|arbeit|privat>“."""
+    num, _, value = arg.strip().partition(" ")
+    value = value.strip().lstrip("#")
+    if not num.isdigit() or not value:
+        return Reply("So geht's: /bereich 3 Privat  (oder Uni, Arbeit, keiner)")
+    row = conn.execute("SELECT title FROM tasks WHERE id = ?", (int(num),)).fetchone()
+    if row is None:
+        return Reply(f"Aufgabe #{num} gibt es nicht.")
+    path = AREA_CHOICES.get(value.lower(), (None, value))[1]
+    none = value.lower() in {"keiner", "kein", "keine", "-"}
+    area_id = None if none else areas.ensure_path(conn, path, actor="user")
+    tasks.set_area(conn, int(num), area_id, actor="user")
+    shown = "ohne Bereich" if none else f"#{areas.path_of(conn, area_id)}"
+    return Reply(f"#{num} „{row['title']}“: {shown} ✅\n{calendar_line(conn, int(num))}",
+                 [area_buttons(conn, int(num))], changed=True)
 
 
 def _task_buttons(task_id: int) -> list[tuple[str, str]]:
@@ -279,6 +326,8 @@ def handle_message(
             return Reply(ilias_overview(conn))
         if cmd == "/log":
             return Reply(log_reply(conn, int(arg) if arg.isdigit() else 8))
+        if cmd == "/bereich":
+            return _set_area(conn, arg)
         if cmd in {"/frist", "/aufwand"}:
             return _set_field(conn, arg, cmd[1:])
         if cmd == "/erledigt":
@@ -290,6 +339,9 @@ def handle_message(
         if cmd in {"/sperrliste", "/blacklist"}:
             return blacklist_reply(conn)
         return Reply("Das Kommando kenne ich nicht.\n\n" + HELP)
+    titled = voice.receive_title(conn, text)   # Antwort auf „✏️ Titel“ unter einer Sprachnachricht?
+    if titled is not None:
+        return Reply(*titled)
     waiting = feedback.awaiting(conn)   # Antwort auf „✏️ Frist ändern“?
     if waiting is not None:
         got = feedback.receive_deadline(conn, waiting, text)
@@ -309,22 +361,29 @@ def quick_add(
     area_id = areas.ensure_path(conn, q.area, actor="user") if q.area else None
     task_id = tasks.add_task(
         conn, title=q.title, source="telegram", actor="user", area_id=area_id, deadline=q.deadline,
-        not_before=q.not_before, estimate_min=q.estimate_min, source_ref=f"msg:{message_id}" if message_id else None)
+        not_before=q.not_before, fixed_start=q.start, fixed_end=q.end, estimate_min=q.estimate_min,
+        source_ref=f"msg:{message_id}" if message_id else None)
     if task_id is None:
         return Reply("Diese Nachricht hatte ich schon als Aufgabe angelegt – oder der Titel ist gesperrt (Blacklist).")
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    return Reply(f"✅ Aufgabe angelegt:\n{_task_line(conn, row)}\nIch plane sie ein.",
-                 [_task_buttons(task_id)], changed=True)
+    plan = "Ich trage sie genau dann ein." if q.start else "Ich plane sie ein."
+    return Reply(f"✅ Aufgabe angelegt:\n{_task_line(conn, row)}\n{plan}\n{calendar_line(conn, task_id)}",
+                 [_task_buttons(task_id), area_buttons(conn, task_id)], changed=True)
 
 
 def handle_callback(conn: sqlite3.Connection, data: str) -> Reply:
     action, _, raw = (data or "").partition(":")
     if action == "ilt":
         return _ilias_to_task(conn, raw)
-    if action == "vo":   # Sprachnachricht: vo:<Nr>:ok|no
+    if action == "ar":   # Bereich per Button: ar:<Nr>:<uni|arbeit|privat>
+        num, _, key = raw.partition(":")
+        return _set_area(conn, f"{num} {key}")
+    if action == "vo":   # Sprachnachricht: vo:<Nr>:ok|edit|no
         num, _, choice = raw.partition(":")
         if not num.isdigit():
             return Reply("Unbekannte Aktion.")
+        if choice == "edit":
+            return Reply(*voice.ask_title(conn, int(num)))
         text, buttons, changed = voice.decide(conn, int(num), choice == "ok")
         return Reply(text, buttons, changed=changed)
     if action == "fb":   # Einschätzung zu einer Mail-Aufgabe: fb:<Nr>:<Feld>:<Wert>

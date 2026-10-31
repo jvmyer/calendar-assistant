@@ -29,7 +29,9 @@ class Settings:
     mail_feedback: bool = False            # unter Mail-Aufgaben nach Einschätzung fragen (MAIL_FEEDBACK=1: an)
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:4b"
-    whisper_model: str = "small"          # tiny | base | small | medium (größer = genauer, langsamer)
+    # tiny | base | small | medium | turbo. turbo hört deutlich besser als small und braucht auf dem Acer ~17 s
+    # statt ~4 s pro Nachricht (gemessen 2026-10-30, beam 5)
+    whisper_model: str = "turbo"
     mcp_host: str = "127.0.0.1"           # MCP-Server bindet standardmäßig nur lokal (SSH-Tunnel nötig)
     mcp_port: int = 8765
     mcp_token: str = ""                   # Pflicht zum Start: Bearer-Token für den MCP-Server (MCP_TOKEN)
@@ -97,7 +99,7 @@ def load_settings() -> Settings:
         gmail_query=os.environ.get("GMAIL_QUERY", "").strip() or GMAIL_QUERY,
         ollama_url=os.environ.get("OLLAMA_URL", "").strip() or "http://127.0.0.1:11434",
         ollama_model=os.environ.get("OLLAMA_MODEL", "").strip() or "qwen3:4b",
-        whisper_model=os.environ.get("WHISPER_MODEL", "").strip() or "small",
+        whisper_model=os.environ.get("WHISPER_MODEL", "").strip() or "turbo",
         mcp_host=os.environ.get("MCP_HOST", "").strip() or "127.0.0.1",
         mcp_port=int(os.environ.get("MCP_PORT", "").strip() or 8765),
         mcp_token=os.environ.get("MCP_TOKEN", "").strip(),

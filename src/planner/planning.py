@@ -6,6 +6,7 @@ Grundsätze (siehe docs/KONZEPT.md):
 - Heute und morgen bleiben stabil: bestehende Blocker dort werden nur gelöst, wenn sie mit
   einem neuen Termin kollidieren oder ihre Aufgabe erledigt ist.
 - Jede Änderung geht mit Begründung ins Change-Log.
+- Aufgaben mit festem Zeitblock („von 16:30 bis 17:30“) bekommen genau diesen Blocker, gepinnt – nie umgeplant.
 - Blocker stehen im Kalender ihres Themas (`Rules.topic_calendars`), sonst im Kalender „Planer“.
 """
 
@@ -239,8 +240,15 @@ def run_plan(
     for b in kept:
         kept_min[b["task_id"]] = kept_min.get(b["task_id"], 0) + minutes(_dt(b["start"]), _dt(b["end"]))
 
+    # Feste Zeitblöcke: einmal anlegen (gepinnt). Hat der Nutzer ihn schon gelöscht oder verschoben, bleibt es dabei.
+    has_block = {r["task_id"] for r in conn.execute("SELECT DISTINCT task_id FROM blocks")}
+    fixed_new = [(tid, _dt(t["fixed_start"]), _dt(t["fixed_end"])) for tid, t in tasks.items()
+                 if t["fixed_start"] and tid not in has_block]
+
     inputs: list[TaskInput] = []
     for tid, t in tasks.items():
+        if t["fixed_start"]:
+            continue
         estimate = t["estimate_min"] or rules.default_estimate_min
         remaining = estimate - done_min.get(tid, 0) - kept_min.get(tid, 0)
         if remaining <= 0:
@@ -258,6 +266,7 @@ def run_plan(
     rejected = conn.execute("SELECT start, end FROM blocks WHERE state = 'removed' AND end > ?", (now_iso,)).fetchall()
     fixed: list[Interval] = [(_dt(b["start"]), _dt(b["end"])) for b in kept]
     fixed += [(_dt(r["start"]), _dt(r["end"])) for r in rejected]
+    fixed += [(s, e) for _tid, s, e in fixed_new]
 
     free = free_windows(now, rules, busy, fixed)
     result = schedule(inputs, free, rules, now)
@@ -280,6 +289,8 @@ def run_plan(
         report.changes.append(Change("moved", p.task_id, title_of(p.task_id), p.start, p.end, _dt(row["start"])))
     for p in created:
         report.changes.append(Change("created", p.task_id, title_of(p.task_id), p.start, p.end))
+    for tid, s, e in fixed_new:
+        report.changes.append(Change("created", tid, title_of(tid), s, e))
 
     report.unplaced, report.overdue = dict(result.unplaced), set(result.overdue)
 
@@ -330,19 +341,20 @@ def run_plan(
             topic_ids[name] = cal.ensure_calendar(name, f"calendar_id:topic:{name.lower()}")
         return topic_ids[name]
 
-    for p in created:
-        target = calendar_of(p.task_id)
-        ev = cal.create_block(target, title_of(p.task_id), p.start, p.end, task_id=p.task_id,
-                              description=_description(conn, p.task_id))
+    for task_id, start, end, pinned in [*((p.task_id, p.start, p.end, 0) for p in created),
+                                         *((tid, s, e, 1) for tid, s, e in fixed_new)]:
+        target = calendar_of(task_id)
+        ev = cal.create_block(target, title_of(task_id), start, end, task_id=task_id,
+                              description=_description(conn, task_id))
         cur = conn.execute(
-            "INSERT INTO blocks(task_id, start, end, gcal_event_id, calendar_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (p.task_id, _iso(p.start), _iso(p.end), ev["id"], target, created_at),
+            "INSERT INTO blocks(task_id, start, end, gcal_event_id, calendar_id, pinned, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_id, _iso(start), _iso(end), ev["id"], target, pinned, created_at),
         )
         conn.commit()
         changelog.log(conn, actor="planner", action="block.created", entity="block", entity_id=cur.lastrowid,
-                      detail={"task_id": p.task_id, "start": _iso(p.start), "end": _iso(p.end)},
-                      reason="Aufgabe eingeplant")
+                      detail={"task_id": task_id, "start": _iso(start), "end": _iso(end)},
+                      reason="Fester Zeitblock des Nutzers" if pinned else "Aufgabe eingeplant")
 
     # Bestehende Blocker (auch gepinnte) in den Kalender ihres Themas umziehen – Zeit bleibt, wie sie ist
     for row in conn.execute("SELECT * FROM blocks WHERE state = 'active' AND end > ?", (now_iso,)).fetchall():
@@ -358,7 +370,9 @@ def run_plan(
 
 
 def _description(conn: sqlite3.Connection, task_id: int) -> str:
-    row = conn.execute("SELECT deadline FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    row = conn.execute("SELECT deadline, fixed_start FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row and row["fixed_start"]:
+        return f"Fester Zeitblock (Aufgabe #{task_id}) – wird nicht automatisch verschoben."
     lines = [f"Automatisch geplant (Aufgabe #{task_id})."]
     if row and row["deadline"]:
         dl = deadline_to_dt(row["deadline"]).astimezone(TZ)

@@ -131,13 +131,13 @@ Konfigurierbar, z. B.: Arbeitszeitfenster, Ruhezeiten, max. Stunden pro Bereich 
 
 ### Sprachnachrichten (umgesetzt 2026-10-16)
 
-Telegram-Sprachnachricht → **faster-whisper** (`small`, int8, nur CPU, Modell in `data/whisper`) → lokales Modell liest Titel, Frist-Stelle (Datum rechnet `deadlines.resolve_phrase`), Aufwand, Priorität und Bereich (nur vorhandene Bereiche) → Vorschau mit **[✅ Anlegen] [❌ Verwerfen]**; angelegt wird erst nach Bestätigung. Ohne Modell: Text wie getippt lesen (`parse_quick`). Max. 5 Min. Aufnahme; Wortlaut wird nach der Entscheidung gelöscht. Test: `planner voice-test <datei>` (speichert nichts). Hinweis: faster-whisper 1.2 braucht PyAV < 16.
+Telegram-Sprachnachricht → **faster-whisper** (`turbo`, beam 5, int8, nur CPU, ~17 s auf dem Acer, Modell in `data/whisper`) → lokales Modell liest Titel und Frist-Stelle (nur wenn wörtlich im Text; Datum rechnet `deadlines.resolve_phrase`) und Bereich (nur ausdrücklich genannte) → der Code bestimmt Uhrzeit („halb fünf“ = 16:30), Dauer, Priorität (nur „wichtig“/„irgendwann“ o. Ä.) und säubert den Titel (`voice.clean_title`) → Vorschau mit **[✅ Anlegen] [✏️ Titel] [❌ Verwerfen]**; angelegt wird erst nach Bestätigung. Ohne Modell: Text wie getippt lesen (`parse_quick`). Max. 5 Min. Aufnahme; Wortlaut wird nach der Entscheidung gelöscht. Test: `planner voice-test <datei>` (speichert nichts). Hinweis: faster-whisper 1.2 braucht PyAV < 16.
 
 ## 9. Hardware & Deployment
 
 | Gerät | RAM | Rolle |
 |---|---|---|
-| Laptop Acer (i7-7500U, 2 Kerne/4 Threads, AVX2), Ubuntu Server 24.04 | **8 GB** | **Hauptsystem**, läuft 24/7 zu Hause: Connectors, Planer, Bot, Whisper (small). Wegen 8 GB nur ein **kleines** lokales LLM (3–4B, 4-Bit) fürs Mail-Lesen (stündlich, langsam ist ok). Installiert am 2026-10-13, Stand und Acer-Besonderheiten in `deploy/README.md`. |
+| Laptop Acer (i7-7500U, 2 Kerne/4 Threads, AVX2), Ubuntu Server 24.04 | **8 GB** | **Hauptsystem**, läuft 24/7 zu Hause: Connectors, Planer, Bot, Whisper (turbo). Wegen 8 GB nur ein **kleines** lokales LLM (3–4B, 4-Bit) fürs Mail-Lesen (stündlich, langsam ist ok). Installiert am 2026-10-13, Stand und Acer-Besonderheiten in `deploy/README.md`. |
 | Raspberry Pi 5 | 4 GB | Nicht im Kern. Optional: Backup-Ziel oder Monitoring. |
 | Gemieteter Server | ~3 GB | Nicht im Kern. Optional: verschlüsselte Offsite-Backups. |
 
@@ -190,7 +190,7 @@ Root mit UMask 0077, keine bekannten Schwachstellen in Abhängigkeiten (pip-audi
 - [x] HKA-Mail über OWA mit HARICA-Zertifikat (läuft stündlich)
 - [x] Google-Cloud-Projekt, bleibt im Teststatus (7-Tage-Login; Bot erinnert)
 - [x] ILIAS: Aufgaben mit Frist automatisch in den Kalender
-- [x] Sprachnachrichten (Whisper small, Bestätigung vor dem Anlegen)
+- [x] Sprachnachrichten (Whisper turbo, Bestätigung vor dem Anlegen, Titel per ✏️ korrigierbar)
 - [x] Gmail eingeschaltet (neuer Google-Login mit Leserecht; nächster Re-Login ca. 23.10.)
 - [ ] **Regeln an den Alltag anpassen** (`data/rules.toml` fehlt → Standard Mo–Sa 9–19 Uhr) und Bereichsgewichte (z. B. Arbeit > Uni)
 - [ ] Trefferquote der Prioritäten nach einigen Tagen auswerten (Nutzer meldet nur Zahlen, keine Inhalte)

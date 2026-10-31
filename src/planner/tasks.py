@@ -19,6 +19,8 @@ def add_task(
     deadline: str | None = None,
     estimate_min: int | None = None,
     not_before: str | None = None,
+    fixed_start: str | None = None,
+    fixed_end: str | None = None,
 ) -> int | None:
     """Legt eine Aufgabe an. Gibt None zurück, wenn (source, source_ref) schon existiert
     oder der Titel auf der Blacklist steht (siehe `blacklist.py`)."""
@@ -27,9 +29,9 @@ def add_task(
     ts = now_iso()
     try:
         cur = conn.execute(
-            "INSERT INTO tasks(title, area_id, source, source_ref, deadline, not_before, estimate_min, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (title, area_id, source, source_ref, deadline, not_before, estimate_min, ts, ts),
+            "INSERT INTO tasks(title, area_id, source, source_ref, deadline, not_before, fixed_start, fixed_end, "
+            "estimate_min, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (title, area_id, source, source_ref, deadline, not_before, fixed_start, fixed_end, estimate_min, ts, ts),
         )
     except sqlite3.IntegrityError:
         return None
@@ -42,7 +44,7 @@ def add_task(
         entity="task",
         entity_id=task_id,
         detail={"title": title, "source": source, "deadline": deadline, "not_before": not_before,
-                "estimate_min": estimate_min},
+                "fixed_start": fixed_start, "fixed_end": fixed_end, "estimate_min": estimate_min},
     )
     return task_id
 
@@ -90,6 +92,11 @@ def set_deadline(conn: sqlite3.Connection, task_id: int, deadline: str | None, *
 
 def set_estimate(conn: sqlite3.Connection, task_id: int, minutes: int | None, *, actor: str) -> None:
     _update(conn, task_id, "estimate_min", minutes, actor=actor)
+
+
+def set_area(conn: sqlite3.Connection, task_id: int, area_id: int | None, *, actor: str) -> None:
+    """Bereich ändern – der Planer zieht den Blocker dann in den Kalender des neuen Themas um."""
+    _update(conn, task_id, "area_id", area_id, actor=actor)
 
 
 def set_priority(conn: sqlite3.Connection, task_id: int, boost: float, *, actor: str) -> None:

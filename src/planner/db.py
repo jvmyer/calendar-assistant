@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     source_ref    TEXT,                     -- z. B. Mail-ID, zur Deduplizierung
     deadline      TEXT,                     -- ISO 8601
     not_before    TEXT,                     -- frühester Tag (ISO-Datum), z. B. „morgen erledigen“
+    fixed_start   TEXT,                     -- fester Zeitblock („von 16:30 bis 17:30“), wird nie umgeplant
+    fixed_end     TEXT,
     estimate_min  INTEGER,                  -- geschätzter Aufwand (Minuten)
     actual_min    INTEGER,                  -- tatsächlicher Aufwand (fürs Lernen)
     priority_boost REAL NOT NULL DEFAULT 1.0,
@@ -97,6 +99,8 @@ CREATE TABLE IF NOT EXISTS voice_notes (
     title        TEXT NOT NULL,
     deadline     TEXT,
     not_before   TEXT,
+    fixed_start  TEXT,
+    fixed_end    TEXT,
     estimate_min INTEGER,
     priority     TEXT NOT NULL DEFAULT 'mittel',
     area         TEXT,
@@ -246,6 +250,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for table in ("tasks", "voice_notes"):
         if "not_before" not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN not_before TEXT")
+            conn.commit()
+        if "fixed_start" not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN fixed_start TEXT")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN fixed_end TEXT")
             conn.commit()
     if get_meta(conn, "migrated:uni_area") is None:
         # Einmalig (2026-10-28): offene HKA-Mail- und ILIAS-Aufgaben ohne Bereich zählen zu „Uni“,
